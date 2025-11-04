@@ -38,6 +38,24 @@ CSV_HEADERS = ["派駐單位", "姓名", "日期", "上班時間", "下班時間
 
 
 # ========== Gemini 相關 ==========
+# ---- 放在 main() 最前面（任何 UI 之前）----
+if "GEMINI_API_KEY" not in st.session_state:
+    st.session_state["GEMINI_API_KEY"] = None
+if "input_gemini_api_key" not in st.session_state:
+    st.session_state["input_gemini_api_key"] = ""
+if "uploader_key" not in st.session_state:
+    st.session_state["uploader_key"] = 0
+
+def save_api_key():
+    key = (st.session_state.get("input_gemini_api_key") or "").strip()
+    st.session_state["GEMINI_API_KEY"] = key or None
+    # 不要在這裡 rerun，Streamlit 會自己重跑
+
+def clear_api_key():
+    st.session_state["GEMINI_API_KEY"] = None
+    st.session_state["input_gemini_api_key"] = ""
+    # 這裡也不要 rerun
+
 def get_gemini_api_key() -> Optional[str]:
     """取得 Gemini API Key，優先順序：session_state > 環境變數 > Streamlit secrets（環境變數更安全）"""
     try:
@@ -225,6 +243,7 @@ def main() -> None:
     st.title(APP_TITLE)
     st.caption("上傳出勤表（JPG 或 PDF），由模型解析並輸出 CSV。")
 
+    # ---- Sidebar（替換你原本的儲存/清除區塊）----
     with st.sidebar:
         st.subheader("設定")
 
@@ -232,20 +251,12 @@ def main() -> None:
         if api_key:
             st.success("✓ 已偵測到 API Key")
             st.caption("已載入 API Key。")
-            if "GEMINI_API_KEY" in st.session_state:
-                if st.button("清除暫存的 API Key"):
-                    del st.session_state["GEMINI_API_KEY"]
-                    st.experimental_rerun()
+            st.button("清除暫存的 API Key", on_click=clear_api_key)
         else:
             st.error("✗ 未偵測到 API Key")
-            st.caption("請設定環境變數 GEMINI_API_KEY 或 GOOGLE_API_KEY；或在下方輸入（僅用於本地測試）")
-            input_key = st.text_input("輸入 Gemini API Key", type="password", key="input_gemini_api_key")
-            if input_key:
-                if st.button("儲存 API Key"):
-                    st.session_state["GEMINI_API_KEY"] = input_key
-                    st.success("已儲存於 session，頁面將重新整理以使用此 API Key。")
-                    st.experimental_rerun()
-            st.caption("建議使用環境變數，比 UI 輸入或 secrets.toml 更安全。")
+            st.caption("請設定環境變數 GEMINI_API_KEY/GOOGLE_API_KEY；或暫存於下方輸入框（僅供本機測試）")
+            st.text_input("輸入 Gemini API Key", type="password", key="input_gemini_api_key")
+            st.button("儲存 API Key", on_click=save_api_key)
 
         model = st.selectbox(
             "Gemini 模型",
