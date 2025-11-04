@@ -197,6 +197,27 @@ def normalize_csv_text(csv_text: str) -> str:
 def csv_to_dataframe(csv_text: str) -> pd.DataFrame:
     return pd.read_csv(io.StringIO(csv_text))
 
+DANGEROUS_PREFIXES = ("=", "+", "-", "@")
+
+def sanitize_csv_for_excel(text: str) -> str:
+    out_lines = []
+    for line in text.splitlines():
+        cells = [c.strip() for c in line.split(",")]
+        safe = []
+        for c in cells:
+            if c and c[0] in DANGEROUS_PREFIXES:
+                safe.append("'" + c)
+            else:
+                safe.append(c)
+        out_lines.append(",".join(safe))
+    return "\n".join(out_lines)
+
+if "uploader_key" not in st.session_state:
+    st.session_state["uploader_key"] = 0
+
+def clear_uploads():
+    # 只要變更 key，file_uploader 就會被視為新元件而重置
+    st.session_state["uploader_key"] += 1
 
 # ========== Streamlit UI ==========
 def main() -> None:
@@ -235,24 +256,19 @@ def main() -> None:
         )
         max_pages = st.number_input("PDF 解析頁數上限", min_value=1, max_value=30, value=5, step=1)
 
-    uploader_key = st.session_state.get("uploader_key", 0)
-
+    uploader_key = st.session_state["uploader_key"]
     uploaded = st.file_uploader(
         "上傳檔案（可多選）",
         type=["jpg", "jpeg", "pdf"],
         accept_multiple_files=True,
-        key=f"file_uploader_{uploader_key}"
+        key=f"file_uploader_{uploader_key}",
     )
 
     col1, col2 = st.columns([1, 1])
     with col1:
         parse_clicked = st.button("解析成 CSV", type="primary", use_container_width=True)
     with col2:
-        clear_clicked = st.button("全部清空", use_container_width=True)
-
-    if clear_clicked:
-        st.session_state["uploader_key"] = uploader_key + 1
-        st.experimental_rerun()
+        st.button("全部清空", on_click=clear_uploads, use_container_width=True)
 
     if parse_clicked:
         if not uploaded or len(uploaded) == 0:
@@ -322,9 +338,10 @@ def main() -> None:
             if df is not None:
                 st.dataframe(df, use_container_width=True)
 
+            safe_csv = sanitize_csv_for_excel(csv_text or "")
             st.download_button(
                 label="下載 CSV",
-                data=(csv_text or "").encode("utf-8-sig"),
+                data=safe_csv.encode("utf-8-sig"),
                 file_name="attendance.csv",
                 mime="text/csv",
             )
