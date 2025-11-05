@@ -1,6 +1,7 @@
 ﻿# python
 import io
 import os
+import csv, re
 from typing import List, Optional
 
 import pandas as pd
@@ -34,7 +35,22 @@ except Exception:  # pragma: no cover
 
 
 APP_TITLE = "出勤表解析系統"
-CSV_HEADERS = ["派駐單位", "姓名", "日期", "上班時間", "下班時間", "備註"]
+CSV_HEADERS = [
+    "記錄類型",          # 出勤 / 請假
+    "派駐單位",
+    "姓名",
+    "日期",             # 出勤：當日；請假：= 請假起日（方便排序）
+    "上班時間",
+    "下班時間",
+    "假別",             # 事假 / 病假 / 特休 / 公假 / 喪假 / 婚假 / 產假 / 陪產假 / 育嬰假 / 家庭照顧假 / 補休 / 半薪病假 / 其他
+    "請假起日",          # YYYY-MM-DD
+    "請假迄日",          # YYYY-MM-DD（若未知可留空）
+    "請假時間(起)",       # HH:MM（來源有區間時才填）
+    "請假時間(迄)",       # HH:MM（來源有區間時才填）
+    "請假時數(小時)",      # 來源明載才填；不要換算
+    "請假天數(天)",        # 來源明載才填；不要換算
+    "備註"
+]
 
 
 # ========== Gemini 相關 ==========
@@ -106,21 +122,112 @@ def list_available_models() -> List[str]:
 
 def build_instructions() -> str:
     return (
-        "你是一個嚴謹的表格解析器。請從提供的內容中找出出勤紀錄，"
-        "並轉成 CSV。第一列請輸出精確欄位標題：" + ", ".join(CSV_HEADERS) + ".\n\n"
-        "規則：\n"
-        "- 僅輸出 CSV 純文字，勿包含解釋或額外內容。\n"
-        "- 日期格式統一使用 YYYY-MM-DD（西元年）。\n"
-        "- 年份轉換：若來源為民國年（例如「民國114年」或「114年」），必須轉換為西元年。\n"
-        "  轉換公式：西元年 = 民國年 + 1911\n"
-        "  例如：民國114年 → 2025年，民國113年 → 2024年，民國112年 → 2023年。\n"
-        "- 上班時間與下班時間使用 24 小時制（例如 09:00、18:30）。\n"
-        "- 備註欄位處理：\n"
-        "  * 僅根據檔案中明確標示的資訊填入備註，不要自行推測或臆測。\n"
-        "  * 若檔案中有明確標示特殊情況，請在備註中說明。\n"
-        "  * 若檔案中沒有明確標示任何特殊情況，備註欄位請留空。\n"
-        "- 若缺漏資料列，請僅輸出能確定的列。\n"
+        "你是一個嚴謹的表格解析器。請從提供的內容中找出「出勤」與「請假」兩類紀錄，"
+        "並輸出 CSV。第一列必須輸出精確欄位標題：" + ", ".join(CSV_HEADERS) + "。\n\n"
+        "【輸出格式要求】\n"
+        "- 僅輸出 CSV 純文字。\n"
+        "- 第一列必須是表頭：" + ", ".join(CSV_HEADERS) + "。\n"
+        "- 每一列都必須嚴格對齊以上欄位數量（共 " + str(len(CSV_HEADERS)) + " 欄），即使某欄無資料也要留空，"
+        "例如連續的逗號表示空欄位。\n"
+        "- 不得多出或缺少欄位，否則會導致匯入系統失敗。\n"
+        "- 每列資料都以英文逗號 ( , ) 分隔；禁止使用全形逗號、分號、tab 或其他符號。\n"
+        "- 請確保每列的欄位順序與表頭完全一致。\n"
+        "\n"
+        "【一般規則】\n"
+        "- 日期一律使用 YYYY-MM-DD（西元年），民國年需轉換：西元 = 民國 + 1911。\n"
+        "- 時間一律使用 24 小時制 HH:MM（例如 09:00、18:30）。\n"
+        "- 僅當來源明載『時數』或『天數』時，才分別填入『請假時數(小時)』或『請假天數(天)』；不得換算。\n"
+        "- 同一份文件若包含多種假別，請各假別各輸出一列。\n"
+        "- 不可臆測；無法確定的欄位留空（但仍保留逗號）。\n"
+        "\n"
+        "【分類規則】\n"
+        "- 若段落明確顯示出勤關鍵字（上班/下班、打卡、刷卡、遲到、早退、加班、工號、班別等），→ 記錄類型=出勤。\n"
+        "- 若段落明確顯示請假關鍵字（請假單/假別、申請人/代理人/主管/核准、起迄日期/時間、天數/時數等），→ 記錄類型=請假。\n"
+        "- 若兩者皆不明確，請略過（不要誤判為請假）。\n"
+        "- 若同人同日同時有出勤與請假，請分列輸出（出勤一列、請假若干列）。\n"
+        "\n"
+        "【出勤列】\n"
+        "- 記錄類型=出勤。\n"
+        "- 填『派駐單位』『姓名』『日期』『上班時間』『下班時間』；其他請假欄位留空。\n"
+        "\n"
+        "【請假列（不拆天）】\n"
+        "- 記錄類型=請假。\n"
+        "- 『請假起日』『請假迄日』：依文件原始日期範圍填寫（不拆成多天多列）。\n"
+        "- 『日期』請填與『請假起日』相同。\n"
+        "- 『假別』：標準化為：事假, 病假, 特休, 公假, 喪假, 婚假, 產假, 陪產假, 育嬰假, 家庭照顧假, 補休, 半薪病假, 其他。\n"
+        "- 若文件提供『時間區間』，請填『請假時間(起)/(迄)』；\n"
+        "  若文件提供『時數』，填『請假時數(小時)』；若提供『天數』，填『請假天數(天)』；"
+        "  若同時提供兩種，皆可保留。\n"
+        "- 跨午夜的區間（例如 22:00-02:00），保持一列：『請假起日』為起始日、『請假迄日』為次日。\n"
+        "\n"
+        "【備註欄位】\n"
+        "- 僅放文件中明確標示的資訊（單據號、簽核註記、原文假別、補充說明、原始多段時段等）。\n"
     )
+
+def fix_csv_column_count_and_shift(csv_text: str, headers: list[str]) -> str:
+    expected = len(headers)
+    out_rows = []
+    reader = csv.reader(csv_text.splitlines())
+    rows = list(reader)
+
+    # 先確保第一列就是正確表頭（你已經有 normalize_csv_text 在做，這裡保險）
+    if rows and [h.strip() for h in rows[0]] == headers:
+        start = 1
+        out_rows.append(headers)
+    else:
+        start = 0
+        out_rows.append(headers)
+
+    # 建欄位索引
+    idx = {name: i for i, name in enumerate(headers)}
+
+    for r in rows[start:]:
+        # pad 以利索引，再截斷
+        r2 = r[:] + [""] * max(0, expected - len(r))
+        extras = r2[expected:] if len(r2) > expected else []
+        r2 = r2[:expected]
+
+        # 出勤列：僅需固定欄位數
+        if r2 and r2[0].strip() == "出勤":
+            pass
+
+        # 請假列：合併多餘欄到備註 + 抽出天數
+        elif r2 and r2[0].strip() == "請假":
+            extra_texts = [t.strip() for t in extras if t.strip()]
+            if extra_texts:
+                r2[idx["備註"]] = (r2[idx["備註"]].strip() + "；" if r2[idx["備註"]].strip() else "") + "；".join(extra_texts)
+            note = r2[idx["備註"]].strip()
+            # 若備註是「純數字/數字+天」，把數字搬回請假天數(天)
+            m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(?:天)?\s*", note)
+            if m and not r2[idx["請假天數(天)"]].strip():
+                r2[idx["請假天數(天)"]] = m.group(1)
+                r2[idx["備註"]] = ""
+            else:
+                # 若備註同時包含數字與文字，用；切開，數字進天數，文字留備註
+                parts = [p.strip() for p in re.split(r"[；;]", note) if p.strip()]
+                numeric_tokens = [p for p in parts if re.fullmatch(r"\d+(?:\.\d+)?(?:\s*天)?", p)]
+                text_tokens = [p for p in parts if p not in numeric_tokens]
+                if numeric_tokens and not r2[idx["請假天數(天)"]].strip():
+                    nm = re.search(r"\d+(?:\.\d+)?", numeric_tokens[0])
+                    if nm:
+                        r2[idx["請假天數(天)"]] = nm.group(0)
+                    r2[idx["備註"]] = "；".join(text_tokens)
+
+        # 最後保證欄位數
+        if len(r2) < expected:
+            r2 += [""] * (expected - len(r2))
+        elif len(r2) > expected:
+            r2 = r2[:expected]
+
+        out_rows.append(r2)
+
+    # 輸出為字串
+    from io import StringIO
+    buf = StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    for row in out_rows:
+        writer.writerow(row)
+    return buf.getvalue()
 
 
 def call_gemini_for_image_csv(image_bytes: bytes, model: str = "gemini-2.0-flash") -> str:
@@ -335,6 +442,7 @@ def main() -> None:
                 merged_lines.insert(0, header)
 
             csv_text = "\n".join(merged_lines)
+            csv_text = fix_csv_column_count_and_shift(csv_text, headers=CSV_HEADERS)
 
             st.subheader("解析結果 (CSV)")
             st.code(csv_text or "(空白)", language="csv")
