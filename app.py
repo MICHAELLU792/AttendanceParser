@@ -1,80 +1,51 @@
 ﻿# python
 import io
 import os
-import csv
 import re
-from typing import List, Optional, Any
+import time
+from typing import Optional
 import threading
 import concurrent.futures
-import time
 
 import pandas as pd
 import streamlit as st
 
-from config.logging_gemini import log_gemini_usage
-
-# PDF text extraction
-try:
-    import pdfplumber
-except Exception:  # pragma: no cover
-    pdfplumber = None
-
-# Google Gemini SDK
-try:
-    import google.generativeai as genai
-except Exception:  # pragma: no cover
-    genai = None
-
-# PDF rendering (PyMuPDF)
+# PDF rendering (PyMuPDF) - needed for PDF preview
 try:
     import fitz  # PyMuPDF
 except Exception:  # pragma: no cover
     fitz = None
 
-# OCR (pytesseract + PIL)
-try:
-    import pytesseract
-    from PIL import Image
-except Exception:  # pragma: no cover
-    pytesseract = None
-    Image = None
+# Import modules
+from app_config import (
+    APP_TITLE,
+    CSV_HEADERS,
+    GLOBAL_MAX_WORKERS,
+    GLOBAL_API_CONCURRENCY,
+    GLOBAL_SUBMIT_SEMAPHORE,
+    GLOBAL_EXECUTOR,
+    GLOBAL_API_SEMAPHORE,
+    GENAI_LOCK,
+    ENV_API_KEY,
+)
+from gemini_client import (
+    call_gemini_for_image_csv_worker,
+    call_gemini_for_text_csv_worker,
+    list_available_models,
+)
+from file_processing import pdf_to_jpegs
+from csv_processing import (
+    fix_csv_column_count_and_shift,
+    normalize_csv_text,
+    csv_to_dataframe,
+    sanitize_csv_for_excel,
+)
 
-
-APP_TITLE = "出勤表解析系統"
-CSV_HEADERS = [
-    "記錄類型",
-    "派駐單位",
-    "姓名",
-    "日期",
-    "上班時間",
-    "下班時間",
-    "假別",
-    "請假起日",
-    "請假迄日",
-    "請假時間(起)",
-    "請假時間(迄)",
-    "請假時數(小時)",
-    "請假天數(天)",
-    "備註",
-]
-
-# ========== 全域併發控制（可由環境變數微調） ==========
-GLOBAL_MAX_WORKERS = int(os.getenv("APP_MAX_WORKERS", "8"))  # 代表可以接受的背景執行緒數（整個程式）
-GLOBAL_PENDING_FACTOR = int(os.getenv("APP_PENDING_FACTOR", "4"))  # 每個 worker 的允許待處理任務倍數
-GLOBAL_MAX_PENDING = max(16, GLOBAL_MAX_WORKERS * GLOBAL_PENDING_FACTOR)
-GLOBAL_API_CONCURRENCY = int(os.getenv("APP_API_CONCURRENCY", "4"))  # 同時對 Gemini 的並發請求上限（process 內）
-
-GLOBAL_SUBMIT_SEMAPHORE = threading.BoundedSemaphore(GLOBAL_MAX_PENDING)
-GLOBAL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=GLOBAL_MAX_WORKERS)
-GLOBAL_API_SEMAPHORE = threading.Semaphore(GLOBAL_API_CONCURRENCY)
-GENAI_LOCK = threading.Lock()
-
-# 嘗試在 process 啟動時用環境變數 key 做一次 global configure（減少頻繁覆寫）
-ENV_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+# Configure Gemini API if ENV_API_KEY is available
 if ENV_API_KEY:
     try:
-        if genai is not None:
-            genai.configure(api_key=ENV_API_KEY)
+        import google.generativeai as genai
+        genai.configure(api_key=ENV_API_KEY)
     except Exception:
         # 忽略配置錯誤，工作時會再檢查
         pass
@@ -86,6 +57,12 @@ if "input_gemini_api_key" not in st.session_state:
     st.session_state["input_gemini_api_key"] = ""
 if "uploader_key" not in st.session_state:
     st.session_state["uploader_key"] = 0
+if "parsed_dataframe" not in st.session_state:
+    st.session_state["parsed_dataframe"] = None
+if "file_previews" not in st.session_state:
+    st.session_state["file_previews"] = {}  # {filename: file_bytes}
+if "row_to_file_mapping" not in st.session_state:
+    st.session_state["row_to_file_mapping"] = []  # List of (row_index, filename) tuples
 
 
 def save_api_key():
@@ -119,287 +96,11 @@ def get_gemini_api_key() -> Optional[str]:
     return None
 
 
-def ensure_genai_installed() -> None:
-    if genai is None:
-        raise RuntimeError("缺少 google-generativeai 套件，請先安裝：pip install -U google-generativeai")
-
-
-def list_available_models() -> List[str]:
-    try:
-        ensure_genai_installed()
-        models = genai.list_models()
-        available = []
-        for m in models:
-            if hasattr(m, "supported_generation_methods") and "generateContent" in m.supported_generation_methods:
-                model_name = getattr(m, "name", "").replace("models/", "")
-                if model_name:
-                    available.append(model_name)
-        return sorted(available)
-    except Exception:
-        # fallback：提供常用模型清單（含 flash-lite）
-        return ["gemini-2.0-flash-lite", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
-
-
-def build_instructions() -> str:
-    header = ", ".join(CSV_HEADERS)
-    return (
-        # 角色與輸出格式
-        "你是嚴謹的出勤/請假表解析器，輸出內容只能是 CSV 純文字。\n"
-        f"第一列欄位必須為：{header}\n"
-        f"之後每一列都要剛好 {len(CSV_HEADERS)} 欄，以英文逗號 (,) 分隔；沒有值的欄位留空但保留逗號。\n"
-        "禁止使用全形逗號、分號或 tab，欄位順序不可更動，也不能多增加自訂欄位。\n\n"
-        # 日期與時間
-        "日期一律使用 YYYY-MM-DD（民國年需 +1911 轉成西元）。\n"
-        "時間一律使用 24 小時制 HH:MM，例如 09:00、18:30。\n"
-        "請假時數或天數只在原文明確提供時填寫，不得自行換算推估。\n"
-        "同一筆請假就算跨多日，也維持一列資料，不拆成多列。\n\n"
-        # 分類規則
-        "【記錄類型判斷】\n"
-        "- 出勤：文字中有 上班/下班/打卡/刷卡/遲到/早退/加班/班別/工號 等關鍵字 → 記錄類型=出勤。\n"
-        "- 請假：文字中有 請假單/假別/申請人/代理人/主管/核准/起訖日期/時數/天數 等 → 記錄類型=請假。\n"
-        "若內容模糊無法判定，就直接略過，不要硬塞成請假或出勤。\n\n"
-        # 出勤列
-        "【出勤列】\n"
-        "- 記錄類型=出勤。\n"
-        "- 填入：派駐單位、姓名、日期、上班時間、下班時間。\n"
-        "- 所有請假相關欄位（假別、請假起日/迄日、時間、時數、天數）都留空。\n\n"
-        # 請假列
-        "【請假列】\n"
-        "- 記錄類型=請假。\n"
-        "- 日期 欄位填『請假起日』；請假起日/迄日 依文件標示的起迄日期填寫（跨日仍是一列）。\n"
-        "- 假別 正規化為以下其中一種：事假, 病假, 特休, 公假, 喪假, 婚假, 產假, 陪產假, 育嬰假, 家庭照顧假, 補休, 半薪病假, 其他。\n"
-        "- 若有請假時間區間，填入『請假時間(起)』與『請假時間(迄)』。\n"
-        "- 若原文給了請假時數，填入『請假時數(小時)』；若給了天數，填入『請假天數(天)』；若同時都有，兩欄皆可填。\n"
-        "- 跨午夜的區間（例如 22:00–02:00），日期區間使用起日與次日，但仍維持一列資料。\n\n"
-        # 備註
-        "【備註】\n"
-        "備註欄只放原文中的補充說明：例如單據號、簽核意見、原始假別文字、特殊說明等。\n"
-        "不要在備註重複填已經出現在其他欄位（日期、時間、假別、時數/天數）中的資訊。\n"
-    )
-
-
-def fix_csv_column_count_and_shift(csv_text: str, headers: list[str]) -> str:
-    expected = len(headers)
-    out_rows = []
-    reader = csv.reader(csv_text.splitlines())
-    rows = list(reader)
-
-    if rows and [h.strip() for h in rows[0]] == headers:
-        start = 1
-        out_rows.append(headers)
-    else:
-        start = 0
-        out_rows.append(headers)
-
-    idx = {name: i for i, name in enumerate(headers)}
-
-    for r in rows[start:]:
-        r2 = r[:] + [""] * max(0, expected - len(r))
-        extras = r2[expected:] if len(r2) > expected else []
-        r2 = r2[:expected]
-
-        if r2 and r2[0].strip() == "出勤":
-            pass
-        elif r2 and r2[0].strip() == "請假":
-            extra_texts = [t.strip() for t in extras if t.strip()]
-            if extra_texts:
-                r2[idx["備註"]] = (r2[idx["備註"]].strip() + "；" if r2[idx["備註"]].strip() else "") + "；".join(extra_texts)
-            note = r2[idx["備註"]].strip()
-            m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(?:天)?\s*", note)
-            if m and not r2[idx["請假天數(天)"]].strip():
-                r2[idx["請假天數(天)"]] = m.group(1)
-                r2[idx["備註"]] = ""
-            else:
-                parts = [p.strip() for p in re.split(r"[；;]", note) if p.strip()]
-                numeric_tokens = [p for p in parts if re.fullmatch(r"\d+(?:\.\d+)?(?:\s*天)?", p)]
-                text_tokens = [p for p in parts if p not in numeric_tokens]
-                if numeric_tokens and not r2[idx["請假天數(天)"]].strip():
-                    nm = re.search(r"\d+(?:\.\d+)?", numeric_tokens[0])
-                    if nm:
-                        r2[idx["請假天數(天)"]] = nm.group(0)
-                    r2[idx["備註"]] = "；".join(text_tokens)
-
-        if len(r2) < expected:
-            r2 += [""] * (expected - len(r2))
-        elif len(r2) > expected:
-            r2 = r2[:expected]
-
-        out_rows.append(r2)
-
-    from io import StringIO
-    buf = StringIO()
-    writer = csv.writer(buf, lineterminator="\n")
-    for row in out_rows:
-        writer.writerow(row)
-    return buf.getvalue()
-
-
-def _resp_text_safe(resp: Any) -> str:
-    try:
-        if hasattr(resp, "text"):
-            return (resp.text or "").strip()
-        if isinstance(resp, dict):
-            return (resp.get("text", "") or "").strip()
-        return str(resp)
-    except Exception:
-        return ""
-
-
-# Internal functions that assume genai is already configured appropriately
-def _generate_image_csv_internal(image_bytes: bytes, model: str = "gemini-2.0-flash-lite", source: str = "") -> str:
-    instructions = build_instructions()
-    img_part = {"mime_type": "image/jpeg", "data": image_bytes}
-    model_obj = genai.GenerativeModel(model)
-    resp = model_obj.generate_content(
-        [instructions, img_part],
-        generation_config=genai.GenerationConfig(temperature=0),
-    )
-    text = _resp_text_safe(resp)
-    try:
-        usage = getattr(resp, "usage_metadata", None)
-        log_gemini_usage(model, usage, uploaded_filename=source or "", extra_info=instructions[:500])
-    except Exception:
-        pass
-    return text
-
-
-def _generate_text_csv_internal(text: str, model: str = "gemini-pro", source: str = "") -> str:
-    instructions = build_instructions()
-    prompt = instructions + "以下為從 PDF 或 OCR 取得的純文字內容（可能包含表格展平）：\n\n" + text[:200000]
-    model_obj = genai.GenerativeModel(model)
-    resp = model_obj.generate_content(
-        prompt,
-        generation_config=genai.GenerationConfig(temperature=0),
-    )
-    out_text = _resp_text_safe(resp)
-    try:
-        usage = getattr(resp, "usage_metadata", None)
-        log_gemini_usage(model, usage, uploaded_filename=source or "", extra_info=prompt[:1000])
-    except Exception:
-        pass
-    return out_text
-
-
-# Worker wrappers that use the global semaphores/lock. They won't block submission beyond the bounded queue.
-def call_gemini_for_image_csv_worker(image_bytes: bytes, model: str, source: str, api_key: str, lock: threading.Lock, sem: Optional[threading.Semaphore]) -> str:
-    ensure_genai_installed()
-    if not api_key:
-        raise RuntimeError("缺少 GEMINI API Key")
-    if sem:
-        sem.acquire()
-    try:
-        # 只有在需要時覆寫 global configure；若 ENV_API_KEY 與使用者 key 相同則跳過重設
-        need_configure = (api_key != ENV_API_KEY)
-        if need_configure:
-            with lock:
-                genai.configure(api_key=api_key)
-                return _generate_image_csv_internal(image_bytes, model=model, source=source)
-        else:
-            # 已在啟動時設定好或使用環境 key，直接呼叫
-            return _generate_image_csv_internal(image_bytes, model=model, source=source)
-    finally:
-        if sem:
-            sem.release()
-
-
-def call_gemini_for_text_csv_worker(text: str, model: str, source: str, api_key: str, lock: threading.Lock, sem: Optional[threading.Semaphore]) -> str:
-    ensure_genai_installed()
-    if not api_key:
-        raise RuntimeError("缺少 GEMINI API Key")
-    if sem:
-        sem.acquire()
-    try:
-        need_configure = (api_key != ENV_API_KEY)
-        if need_configure:
-            with lock:
-                genai.configure(api_key=api_key)
-                return _generate_text_csv_internal(text, model=model, source=source)
-        else:
-            return _generate_text_csv_internal(text, model=model, source=source)
-    finally:
-        if sem:
-            sem.release()
-
-
-# ========== 檔案處理 ==========
-def pdf_to_jpegs(pdf_bytes: bytes, dpi: int = 220, max_pages: int = 5) -> List[bytes]:
-    if fitz is None:
-        raise RuntimeError("缺少 PyMuPDF 套件，請先安裝：pip install PyMuPDF")
-    images: List[bytes] = []
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    try:
-        for i in range(min(len(doc), max_pages)):
-            page = doc.load_page(i)
-            pix = page.get_pixmap(dpi=dpi, alpha=False)
-            images.append(pix.tobytes("jpeg"))
-    finally:
-        doc.close()
-    return images
-
-
-def extract_pdf_text(file_like: io.BytesIO) -> str:
-    if pdfplumber is None:
-        raise RuntimeError("缺少 pdfplumber 套件，請先安裝依賴：pip install pdfplumber")
-    text_pages: List[str] = []
-    with pdfplumber.open(file_like) as pdf:
-        for page in pdf.pages:
-            extracted = page.extract_text(x_tolerance=1.5, y_tolerance=1.5) or ""
-            text_pages.append(extracted)
-    return "\n\n".join(t for t in text_pages if t)
-
-
-def ocr_image_to_text(image_bytes: bytes, lang: str = "eng+chi_tra") -> str:
-    if pytesseract is None or Image is None:
-        raise RuntimeError("缺少 OCR 依賴，請先安裝：pip install pytesseract pillow，並安裝 Tesseract 執行檔")
-    image = Image.open(io.BytesIO(image_bytes)).convert("L")
-    return pytesseract.image_to_string(image, lang=lang)
-
-
-# ========== CSV 處理 ==========
-def normalize_csv_text(csv_text: str) -> str:
-    if not csv_text:
-        return csv_text
-    s = csv_text.strip()
-    if s.startswith("```"):
-        lines = s.splitlines()
-        if len(lines) >= 2 and lines[0].startswith("```") and lines[-1].startswith("```"):
-            s = "\n".join(lines[1:-1])
-    s = s.replace("\r\n", "\n").replace("\r", "\n").strip()
-    header = ",".join(CSV_HEADERS)
-    first_line = s.split("\n", 1)[0].strip()
-    if first_line.replace(" ", "") != header.replace(" ", ""):
-        s = s.replace("，", ",").replace("、", ",").replace("\t", ",")
-        if not s.startswith(header):
-            s = header + "\n" + s
-    return s
-
-
-def csv_to_dataframe(csv_text: str) -> pd.DataFrame:
-    return pd.read_csv(io.StringIO(csv_text))
-
-
-DANGEROUS_PREFIXES = ("=", "+", "-", "@")
-
-
-def sanitize_csv_for_excel(text: str) -> str:
-    out_lines = []
-    for line in text.splitlines():
-        cells = [c.strip() for c in line.split(",")]
-        safe = []
-        for c in cells:
-            if c and c[0] in DANGEROUS_PREFIXES:
-                safe.append("'" + c)
-            else:
-                safe.append(c)
-        out_lines.append(",".join(safe))
-    return "\n".join(out_lines)
-
-
 def clear_uploads():
     st.session_state["uploader_key"] += 1
 
 
-# helper to submit to global executor while bounding pending tasks
+# Helper to submit to global executor while bounding pending tasks
 def submit_task(fn, *args, **kwargs):
     # Acquire slot for pending+running tasks
     GLOBAL_SUBMIT_SEMAPHORE.acquire()
@@ -418,7 +119,7 @@ def submit_task(fn, *args, **kwargs):
 
 # ========== Streamlit UI ==========
 def main() -> None:
-    st.set_page_config(page_title=APP_TITLE, page_icon="🗂️", layout="centered")
+    st.set_page_config(page_title=APP_TITLE, page_icon="🗂️", layout="wide")
     st.title(APP_TITLE)
     st.caption("上傳出勤表（JPG 或 PDF），由模型解析並輸出 CSV。")
 
@@ -595,8 +296,15 @@ def main() -> None:
         try:
             all_rows = []
             header = ",".join(CSV_HEADERS)
+            
+            # 存储文件预览和建立映射关系
+            file_previews = {}
+            row_to_file_mapping = []
+            current_row_index = 0
 
             futures = []
+            file_futures_map = {}  # {future: (filename, file_bytes, file_type)}
+            
             # submit tasks to the global executor using submit_task (bounded)
             for file_idx, uploaded_file in enumerate(files, start=1):
                 st.divider()
@@ -604,6 +312,8 @@ def main() -> None:
 
                 if uploaded_file.type in ("image/jpeg", "image/jpg") or uploaded_file.name.lower().endswith((".jpg", ".jpeg")):
                     image_bytes = uploaded_file.read()
+                    # 存储文件预览
+                    file_previews[uploaded_file.name] = image_bytes
                     fut = submit_task(
                         call_gemini_for_image_csv_worker,
                         image_bytes,
@@ -613,10 +323,13 @@ def main() -> None:
                         GENAI_LOCK,
                         run_api_sem,
                     )
+                    file_futures_map[fut] = (uploaded_file.name, image_bytes, "image")
                     futures.append(fut)
 
                 elif uploaded_file.type == "application/pdf" or uploaded_file.name.lower().endswith(".pdf"):
                     pdf_bytes = uploaded_file.read()
+                    # 存储文件预览
+                    file_previews[uploaded_file.name] = pdf_bytes
 
                     # define pdf processing function that calls the worker for each page
                     def _process_pdf(pdf_b: bytes, fname: str, model_name: str, max_p: int, key: str, lock: threading.Lock, sema: Optional[threading.Semaphore]):
@@ -647,6 +360,7 @@ def main() -> None:
                         GENAI_LOCK,
                         run_api_sem,
                     )
+                    file_futures_map[fut] = (uploaded_file.name, pdf_bytes, "pdf")
                     futures.append(fut)
 
                 else:
@@ -657,6 +371,7 @@ def main() -> None:
             if futures:
                 with st.spinner("模型解析中（背景執行）..."):
                     for fut in concurrent.futures.as_completed(futures):
+                        filename, file_bytes, file_type = file_futures_map.get(fut, ("unknown", None, "unknown"))
                         try:
                             text = fut.result()
                         except Exception as e:
@@ -667,6 +382,11 @@ def main() -> None:
                         try:
                             norm = normalize_csv_text(text)
                             lines = [l for l in norm.splitlines() if l.strip()]
+                            # 建立行与文件的映射关系（跳过表头）
+                            for line in lines:
+                                if line.strip().replace(" ", "") != header.replace(" ", ""):
+                                    row_to_file_mapping.append((current_row_index, filename))
+                                    current_row_index += 1
                             all_rows.extend(lines)
                         except Exception:
                             # 若 normalize 失敗，仍把原文字加入以利排查
@@ -691,29 +411,128 @@ def main() -> None:
             csv_text = "\n".join(merged_lines)
             csv_text = fix_csv_column_count_and_shift(csv_text, headers=CSV_HEADERS)
 
-            st.subheader("解析結果 (CSV)")
-            st.code(csv_text or "(空白)", language="csv")
+            # 存储到session_state
+            # 注意：row_to_file_mapping的索引对应最终DataFrame的行索引（从0开始，不包括表头）
+            st.session_state["file_previews"] = file_previews
+            st.session_state["row_to_file_mapping"] = row_to_file_mapping
 
             df = None
             try:
                 if csv_text:
                     df = csv_to_dataframe(csv_text)
+                    st.session_state["parsed_dataframe"] = df.copy()
             except Exception:
                 st.warning("CSV 預覽失敗，但仍可下載原始文字。請檢查欄位與分隔符號（建議確保逗號分隔與首列表頭）。")
-
-            if df is not None:
-                st.dataframe(df, use_container_width=True)
-
-            safe_csv = sanitize_csv_for_excel(csv_text or "")
-            st.download_button(
-                label="下載 CSV",
-                data=safe_csv.encode("utf-8-sig"),
-                file_name="attendance.csv",
-                mime="text/csv",
-            )
+                st.session_state["parsed_dataframe"] = None
 
         except Exception as e:
             st.error(f"解析失敗：{e}")
+
+    # 显示解析结果（独立于parse_clicked，基于session_state）
+    parsed_df = st.session_state.get("parsed_dataframe")
+    file_previews = st.session_state.get("file_previews", {})
+    row_to_file_mapping = st.session_state.get("row_to_file_mapping", [])
+    
+    if parsed_df is not None and len(parsed_df) > 0:
+        st.subheader("解析結果")
+        
+        # 左右分栏：左侧表格，右侧文件预览
+        # 左侧50%，右侧50%
+        left_col, right_col = st.columns([1, 1])
+        
+        with left_col:
+            st.markdown("**表格資料（可編輯）**")
+            # 使用CSS确保表格高度与右侧预览区匹配
+            # 使用更具体的选择器来设置表格容器高度
+            st.markdown(
+                """
+                <style>
+                div[data-testid="stDataEditor"] > div {
+                    height: 70vh !important;
+                    min-height: 600px !important;
+                }
+                div[data-testid="stDataEditor"] {
+                    height: 70vh !important;
+                    min-height: 600px !important;
+                }
+                .stDataEditor {
+                    height: 70vh !important;
+                    min-height: 600px !important;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True
+            )
+            # 使用可编辑的表格，从session_state获取最新数据
+            # use_container_width=True 确保表格使用容器全宽，表格会自动支持横向和纵向滚动
+            edited_df = st.data_editor(
+                parsed_df,
+                use_container_width=True,
+                num_rows="fixed",
+                key="data_editor"
+            )
+            # 更新session_state中的dataframe
+            st.session_state["parsed_dataframe"] = edited_df.copy()
+            
+            # 将编辑后的DataFrame转换为CSV并存储
+            csv_buffer = io.StringIO()
+            edited_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
+            csv_text_edited = csv_buffer.getvalue()
+            safe_csv = sanitize_csv_for_excel(csv_text_edited)
+            st.session_state["edited_csv"] = safe_csv.encode("utf-8-sig")
+        
+        with right_col:
+            st.markdown("**檔案預覽**")
+            # 显示文件预览
+            if row_to_file_mapping and len(edited_df) > 0:
+                # 获取当前选中行对应的文件
+                selected_row = st.selectbox(
+                    "選擇要預覽的資料列",
+                    options=list(range(len(edited_df))),
+                    format_func=lambda x: f"第 {x+1} 列",
+                    key="preview_row_selector"
+                )
+                
+                if selected_row < len(row_to_file_mapping):
+                    _, filename = row_to_file_mapping[selected_row]
+                    if filename in file_previews:
+                        file_bytes = file_previews[filename]
+                        st.caption(f"**檔案：** {filename}")
+                        if filename.lower().endswith((".jpg", ".jpeg")):
+                            st.image(file_bytes, caption=filename, use_container_width=True)
+                        elif filename.lower().endswith(".pdf"):
+                            # PDF预览：显示第一页
+                            try:
+                                if fitz is not None:
+                                    doc = fitz.open(stream=file_bytes, filetype="pdf")
+                                    if len(doc) > 0:
+                                        page = doc.load_page(0)
+                                        pix = page.get_pixmap(dpi=150, alpha=False)
+                                        st.image(pix.tobytes("jpeg"), caption=f"{filename} (第1頁)", use_container_width=True)
+                                    doc.close()
+                                else:
+                                    st.info(f"PDF 檔案：{filename}\n（需要 PyMuPDF 套件以顯示預覽）")
+                            except Exception as e:
+                                st.warning(f"無法預覽 PDF：{e}")
+                        else:
+                            st.info(f"檔案：{filename}")
+                    else:
+                        st.info("找不到對應的檔案")
+                else:
+                    st.info("請選擇有效的資料列")
+            else:
+                st.info("無可預覽的檔案")
+        
+        # 下载按钮：使用编辑后的数据
+        st.divider()
+        edited_csv_bytes = st.session_state.get("edited_csv", b"")
+        st.download_button(
+            label="下載 CSV",
+            data=edited_csv_bytes,
+            file_name="attendance.csv",
+            mime="text/csv",
+            use_container_width=False
+        )
 
 
 if __name__ == "__main__":
