@@ -8,10 +8,7 @@ import threading
 import concurrent.futures
 
 import pandas as pd
-import base64
 import streamlit as st
-import streamlit.components.v1 as components
-import uuid
 
 # PDF rendering (PyMuPDF) - needed for PDF preview
 try:
@@ -501,11 +498,8 @@ def main() -> None:
                     if filename in file_previews:
                         file_bytes = file_previews[filename]
                         st.caption(f"**檔案：** {filename}")
-                        
-                        # 将图片转换为base64编码
                         if filename.lower().endswith((".jpg", ".jpeg")):
-                            img_base64 = base64.b64encode(file_bytes).decode()
-                            img_mime = "image/jpeg"
+                            st.image(file_bytes, caption=filename, use_container_width=True)
                         elif filename.lower().endswith(".pdf"):
                             # PDF预览：显示第一页
                             try:
@@ -514,96 +508,14 @@ def main() -> None:
                                     if len(doc) > 0:
                                         page = doc.load_page(0)
                                         pix = page.get_pixmap(dpi=150, alpha=False)
-                                        img_bytes = pix.tobytes("jpeg")
-                                        img_base64 = base64.b64encode(img_bytes).decode()
-                                        img_mime = "image/jpeg"
-                                        doc.close()
-                                    else:
-                                        st.info(f"PDF 檔案：{filename}\n（需要 PyMuPDF 套件以顯示預覽）")
-                                        img_base64 = None
+                                        st.image(pix.tobytes("jpeg"), caption=f"{filename} (第1頁)", use_container_width=True)
+                                    doc.close()
                                 else:
                                     st.info(f"PDF 檔案：{filename}\n（需要 PyMuPDF 套件以顯示預覽）")
-                                    img_base64 = None
                             except Exception as e:
                                 st.warning(f"無法預覽 PDF：{e}")
-                                img_base64 = None
                         else:
                             st.info(f"檔案：{filename}")
-                            img_base64 = None
-                        
-                        # 如果成功获取图片，显示可拖拽的图片
-                        if img_base64:
-                            preview_id = uuid.uuid4().hex
-                            draggable_html = f"""
-                            <div id="container-{preview_id}" style="position: relative; width: 100%; height: 70vh; min-height: 600px; overflow: hidden; border: 1px solid #ddd; background: #f5f5f5; cursor: grab;">
-                                <img id="image-{preview_id}"
-                                     src="data:{img_mime};base64,{img_base64}"
-                                     style="position: absolute; top: 0; left: 0; max-width: none; max-height: none; cursor: grab; user-select: none;"
-                                     draggable="false" />
-                            </div>
-                            <p style="font-size: 0.8em; color: #666; margin-top: 5px; margin-bottom: 0;">💡 提示：按住圖片可拖動查看</p>
-                            <script>
-                            (function() {{
-                                const container = document.getElementById('container-{preview_id}');
-                                const img = document.getElementById('image-{preview_id}');
-                                if (!container || !img) return;
-                                let isDragging = false;
-                                let startX, startY, originLeft, originTop;
-
-                                const clamp = (value, min, max) => {{
-                                    if (min > max) [min, max] = [max, min];
-                                    return Math.max(min, Math.min(max, value));
-                                }};
-
-                                const getLimits = () => {{
-                                    const maxLeft = 0;
-                                    const maxTop = 0;
-                                    const minLeft = Math.min(0, container.offsetWidth - img.offsetWidth);
-                                    const minTop = Math.min(0, container.offsetHeight - img.offsetHeight);
-                                    return {{ maxLeft, maxTop, minLeft, minTop }};
-                                }};
-
-                                const onPointerDown = (e) => {{
-                                    isDragging = true;
-                                    container.style.cursor = 'grabbing';
-                                    const point = e.touches ? e.touches[0] : e;
-                                    startX = point.pageX;
-                                    startY = point.pageY;
-                                    originLeft = parseFloat(img.style.left || 0);
-                                    originTop = parseFloat(img.style.top || 0);
-                                }};
-
-                                const onPointerMove = (e) => {{
-                                    if (!isDragging) return;
-                                    e.preventDefault();
-                                    const point = e.touches ? e.touches[0] : e;
-                                    const walkX = point.pageX - startX;
-                                    const walkY = point.pageY - startY;
-                                    const {{ maxLeft, maxTop, minLeft, minTop }} = getLimits();
-                                    const newLeft = clamp(originLeft + walkX, minLeft, maxLeft);
-                                    const newTop = clamp(originTop + walkY, minTop, maxTop);
-                                    img.style.left = newLeft + 'px';
-                                    img.style.top = newTop + 'px';
-                                }};
-
-                                const onPointerUp = () => {{
-                                    isDragging = false;
-                                    container.style.cursor = 'grab';
-                                }};
-
-                                container.addEventListener('mousedown', onPointerDown);
-                                container.addEventListener('mousemove', onPointerMove);
-                                container.addEventListener('mouseup', onPointerUp);
-                                container.addEventListener('mouseleave', onPointerUp);
-
-                                container.addEventListener('touchstart', onPointerDown, {{ passive: false }});
-                                container.addEventListener('touchmove', onPointerMove, {{ passive: false }});
-                                container.addEventListener('touchend', onPointerUp);
-                                container.addEventListener('touchcancel', onPointerUp);
-                            }})();
-                            </script>
-                            """
-                            components.html(draggable_html, height=620, scrolling=False)
                     else:
                         st.info("找不到對應的檔案")
                 else:
