@@ -6,12 +6,10 @@ import time
 from typing import Optional
 import threading
 import concurrent.futures
+import base64
 
 import pandas as pd
-import base64
 import streamlit as st
-import streamlit.components.v1 as components
-import uuid
 
 # PDF rendering (PyMuPDF) - needed for PDF preview
 try:
@@ -118,6 +116,96 @@ def submit_task(fn, *args, **kwargs):
 
     fut.add_done_callback(_release)
     return fut
+
+
+# --- 新增：互動式影像檢視器（放大/縮小/拖動） ---
+def render_image_viewer(image_bytes: bytes, caption: str = ""):
+    """
+    使用一段輕量的 HTML/JS 在 Streamlit 中嵌入可縮放/拖曳的影像檢視器。
+    支援滑鼠滾輪縮放、按住拖曳平移。僅用於預覽（不改變原始 bytes）。
+    """
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+    img_src = f"data:image/jpeg;base64,{b64}"
+    html = f"""
+    <div style="width:100%; height:70vh; border:1px solid rgba(0,0,0,0.08); position:relative; overflow:hidden; touch-action:none;">
+      <div id="viewer" style="width:100%; height:100%; position:relative; background:#f6f6f6; display:flex; align-items:center; justify-content:center;">
+        <img id="img" src="{img_src}" style="transform-origin:0 0; cursor:grab; position:absolute; left:0; top:0; will-change:transform; user-select:none; -webkit-user-drag:none;"/>
+      </div>
+      <div style="position:absolute; right:8px; top:8px; background:rgba(255,255,255,0.8); padding:4px 8px; border-radius:6px; font-size:12px;">
+        {caption}
+      </div>
+    </div>
+    <script>
+    (function(){{
+      const viewer = document.getElementById('viewer');
+      const img = document.getElementById('img');
+      let scale = 1;
+      let originX = 0;
+      let originY = 0;
+      let dragging = false;
+      let lastX = 0, lastY = 0;
+
+      // 初始化：將圖片放到左上並顯示原始大小
+      img.onload = function() {{
+        img.style.transform = `scale(${{scale}}) translate(${{originX}}px, ${{originY}}px)`;
+      }};
+
+      // 滾輪縮放（以游標位置為中心）
+      viewer.onwheel = function(e) {{
+        e.preventDefault();
+        const rect = img.getBoundingClientRect();
+        // 滑鼠在圖片內的相對座標
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const beforeScale = scale;
+        const delta = e.deltaY > 0 ? 0.9 : 1.1;
+        scale = Math.max(0.1, Math.min(10, scale * delta));
+        // 計算以滑鼠為中心的位移補償（簡化版）
+        originX -= (mx / beforeScale) - (mx / scale);
+        originY -= (my / beforeScale) - (my / scale);
+        img.style.transform = `scale(${{scale}}) translate(${{originX}}px, ${{originY}}px)`;
+      }};
+
+      // 指標事件處理（支援觸控筆與滑鼠）
+      viewer.addEventListener('pointerdown', function(e) {{
+        dragging = true;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        viewer.setPointerCapture(e.pointerId);
+        img.style.cursor = 'grabbing';
+      }});
+
+      viewer.addEventListener('pointermove', function(e) {{
+        if(!dragging) return;
+        const dx = (e.clientX - lastX) / scale;
+        const dy = (e.clientY - lastY) / scale;
+        originX += dx;
+        originY += dy;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        img.style.transform = `scale(${{scale}}) translate(${{originX}}px, ${{originY}}px)`;
+      }});
+
+      function endDrag(e) {{
+        dragging = false;
+        img.style.cursor = 'grab';
+      }}
+      viewer.addEventListener('pointerup', endDrag);
+      viewer.addEventListener('pointercancel', endDrag);
+      viewer.addEventListener('pointerleave', endDrag);
+
+      // 雙擊回復原始值
+      viewer.addEventListener('dblclick', function(e) {{
+        scale = 1;
+        originX = 0;
+        originY = 0;
+        img.style.transform = `scale(${{scale}}) translate(${{originX}}px, ${{originY}}px)`;
+      }});
+    }})();
+    </script>
+    """
+    # 高度使用 70vh 與右側 CSS 一致
+    st.components.v1.html(html, height=600, scrolling=False)
 
 
 # ========== Streamlit UI ==========
@@ -299,7 +387,7 @@ def main() -> None:
         try:
             all_rows = []
             header = ",".join(CSV_HEADERS)
-            
+
             # 存储文件预览和建立映射关系
             file_previews = {}
             row_to_file_mapping = []
@@ -307,7 +395,7 @@ def main() -> None:
 
             futures = []
             file_futures_map = {}  # {future: (filename, file_bytes, file_type)}
-            
+
             # submit tasks to the global executor using submit_task (bounded)
             for file_idx, uploaded_file in enumerate(files, start=1):
                 st.divider()
@@ -385,7 +473,7 @@ def main() -> None:
                         try:
                             norm = normalize_csv_text(text)
                             lines = [l for l in norm.splitlines() if l.strip()]
-                            # 建立行与文件的映射关系（跳过表头）
+                            # 建立行与文件的映射關係（跳過表頭）
                             for line in lines:
                                 if line.strip().replace(" ", "") != header.replace(" ", ""):
                                     row_to_file_mapping.append((current_row_index, filename))
@@ -435,17 +523,17 @@ def main() -> None:
     parsed_df = st.session_state.get("parsed_dataframe")
     file_previews = st.session_state.get("file_previews", {})
     row_to_file_mapping = st.session_state.get("row_to_file_mapping", [])
-    
+
     if parsed_df is not None and len(parsed_df) > 0:
         st.subheader("解析結果")
-        
-        # 左右分栏：左侧表格，右侧文件预览
-        # 左侧50%，右侧50%
+
+        # 左右分栏：左侧表格，右侧文件预覽
+        # 左側50%，右側50%
         left_col, right_col = st.columns([1, 1])
-        
+
         with left_col:
             st.markdown("**表格資料（可編輯）**")
-            # 使用CSS确保表格高度与右侧预览区匹配
+            # 使用CSS确保表格高度与右侧預覽區匹配
             # 使用更具体的选择器来设置表格容器高度
             st.markdown(
                 """
@@ -476,38 +564,39 @@ def main() -> None:
             )
             # 更新session_state中的dataframe
             st.session_state["parsed_dataframe"] = edited_df.copy()
-            
+
             # 将编辑后的DataFrame转换为CSV并存储
             csv_buffer = io.StringIO()
             edited_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
             csv_text_edited = csv_buffer.getvalue()
             safe_csv = sanitize_csv_for_excel(csv_text_edited)
             st.session_state["edited_csv"] = safe_csv.encode("utf-8-sig")
-        
+
         with right_col:
             st.markdown("**檔案預覽**")
-            # 显示文件预览
+            # 顯示文件預覽
             if row_to_file_mapping and len(edited_df) > 0:
-                # 获取当前选中行对应的文件
+                # 獲取當前選中行對應的文件
                 selected_row = st.selectbox(
                     "選擇要預覽的資料列",
                     options=list(range(len(edited_df))),
                     format_func=lambda x: f"第 {x} 列",
                     key="preview_row_selector"
                 )
-                
+
                 if selected_row < len(row_to_file_mapping):
                     _, filename = row_to_file_mapping[selected_row]
                     if filename in file_previews:
                         file_bytes = file_previews[filename]
                         st.caption(f"**檔案：** {filename}")
-                        
-                        # 将图片转换为base64编码
                         if filename.lower().endswith((".jpg", ".jpeg")):
-                            img_base64 = base64.b64encode(file_bytes).decode()
-                            img_mime = "image/jpeg"
+                            # 使用互動式檢視器顯示 JPG
+                            try:
+                                render_image_viewer(file_bytes, filename)
+                            except Exception as e:
+                                st.warning(f"無法顯示圖片預覽：{e}")
                         elif filename.lower().endswith(".pdf"):
-                            # PDF预览：显示第一页
+                            # PDF預覽：顯示第一頁，並使用互動式檢視器
                             try:
                                 if fitz is not None:
                                     doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -515,103 +604,22 @@ def main() -> None:
                                         page = doc.load_page(0)
                                         pix = page.get_pixmap(dpi=150, alpha=False)
                                         img_bytes = pix.tobytes("jpeg")
-                                        img_base64 = base64.b64encode(img_bytes).decode()
-                                        img_mime = "image/jpeg"
-                                        doc.close()
-                                    else:
-                                        st.info(f"PDF 檔案：{filename}\n（需要 PyMuPDF 套件以顯示預覽）")
-                                        img_base64 = None
+                                        render_image_viewer(img_bytes, f"{filename} (第1頁)")
+                                    doc.close()
                                 else:
                                     st.info(f"PDF 檔案：{filename}\n（需要 PyMuPDF 套件以顯示預覽）")
-                                    img_base64 = None
                             except Exception as e:
                                 st.warning(f"無法預覽 PDF：{e}")
-                                img_base64 = None
                         else:
                             st.info(f"檔案：{filename}")
-                            img_base64 = None
-                        
-                        # 如果成功获取图片，显示可拖拽的图片
-                        if img_base64:
-                            preview_id = uuid.uuid4().hex
-                            draggable_html = f"""
-                            <div id="container-{preview_id}" style="position: relative; width: 100%; height: 70vh; min-height: 600px; overflow: hidden; border: 1px solid #ddd; background: #f5f5f5; cursor: grab;">
-                                <img id="image-{preview_id}"
-                                     src="data:{img_mime};base64,{img_base64}"
-                                     style="position: absolute; top: 0; left: 0; max-width: none; max-height: none; cursor: grab; user-select: none;"
-                                     draggable="false" />
-                            </div>
-                            <p style="font-size: 0.8em; color: #666; margin-top: 5px; margin-bottom: 0;">💡 提示：按住圖片可拖動查看</p>
-                            <script>
-                            (function() {{
-                                const container = document.getElementById('container-{preview_id}');
-                                const img = document.getElementById('image-{preview_id}');
-                                if (!container || !img) return;
-                                let isDragging = false;
-                                let startX, startY, originLeft, originTop;
-
-                                const clamp = (value, min, max) => {{
-                                    if (min > max) [min, max] = [max, min];
-                                    return Math.max(min, Math.min(max, value));
-                                }};
-
-                                const getLimits = () => {{
-                                    const maxLeft = 0;
-                                    const maxTop = 0;
-                                    const minLeft = Math.min(0, container.offsetWidth - img.offsetWidth);
-                                    const minTop = Math.min(0, container.offsetHeight - img.offsetHeight);
-                                    return {{ maxLeft, maxTop, minLeft, minTop }};
-                                }};
-
-                                const onPointerDown = (e) => {{
-                                    isDragging = true;
-                                    container.style.cursor = 'grabbing';
-                                    const point = e.touches ? e.touches[0] : e;
-                                    startX = point.pageX;
-                                    startY = point.pageY;
-                                    originLeft = parseFloat(img.style.left || 0);
-                                    originTop = parseFloat(img.style.top || 0);
-                                }};
-
-                                const onPointerMove = (e) => {{
-                                    if (!isDragging) return;
-                                    e.preventDefault();
-                                    const point = e.touches ? e.touches[0] : e;
-                                    const walkX = point.pageX - startX;
-                                    const walkY = point.pageY - startY;
-                                    const {{ maxLeft, maxTop, minLeft, minTop }} = getLimits();
-                                    const newLeft = clamp(originLeft + walkX, minLeft, maxLeft);
-                                    const newTop = clamp(originTop + walkY, minTop, maxTop);
-                                    img.style.left = newLeft + 'px';
-                                    img.style.top = newTop + 'px';
-                                }};
-
-                                const onPointerUp = () => {{
-                                    isDragging = false;
-                                    container.style.cursor = 'grab';
-                                }};
-
-                                container.addEventListener('mousedown', onPointerDown);
-                                container.addEventListener('mousemove', onPointerMove);
-                                container.addEventListener('mouseup', onPointerUp);
-                                container.addEventListener('mouseleave', onPointerUp);
-
-                                container.addEventListener('touchstart', onPointerDown, {{ passive: false }});
-                                container.addEventListener('touchmove', onPointerMove, {{ passive: false }});
-                                container.addEventListener('touchend', onPointerUp);
-                                container.addEventListener('touchcancel', onPointerUp);
-                            }})();
-                            </script>
-                            """
-                            components.html(draggable_html, height=620, scrolling=False)
                     else:
                         st.info("找不到對應的檔案")
                 else:
                     st.info("請選擇有效的資料列")
             else:
                 st.info("無可預覽的檔案")
-        
-        # 下载按钮：使用编辑后的数据
+
+        # 下載按鈕：使用編輯後的資料
         st.divider()
         edited_csv_bytes = st.session_state.get("edited_csv", b"")
         st.download_button(
