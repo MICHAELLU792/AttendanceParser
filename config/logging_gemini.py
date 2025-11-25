@@ -16,12 +16,12 @@ LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 
 # 每 1,000,000 tokens 的價格（USD）
 # 參考 Gemini 官方定價：
-# gemini-2.0-flash      input: $0.10 / 1M, output: $0.40 / 1M
+# gemini-2.0-flash      input: $0.15 / 1M, output: $0.60 / 1M
 # gemini-2.0-flash-lite input: $0.075 / 1M, output: $0.30 / 1M
 MODEL_PRICING = {
     "gemini-2.0-flash": {
-        "input_per_million": 0.10,
-        "output_per_million": 0.40,
+        "input_per_million": 0.15,
+        "output_per_million": 0.60,
     },
     "gemini-2.0-flash-lite": {
         "input_per_million": 0.075,
