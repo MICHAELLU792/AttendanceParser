@@ -381,11 +381,32 @@ def main() -> None:
     st.markdown(
         """
         <style>
-        button[aria-label="解析成 CSV"] {
-            background-color: #cfefff !important;
+        div.stButton > button[kind="primary"] {
+            background-color: #cfefff !important; /* 正常狀態 */
             color: #000 !important;
             border: 1px solid #bce0ff !important;
             box-shadow: none !important;
+            transition: background-color 0.2s ease, box-shadow 0.2s ease;
+        }
+        
+        /* hover 滑過效果 */
+        div.stButton > button[kind="primary"]:hover {
+            background-color: #bde6ff !important; /* 稍微深一點藍 */
+            border-color: #a9d7ff !important;
+            box-shadow: 0 0 4px rgba(188, 224, 255, 0.9) !important; /* 微光 */
+        }
+        
+        /* active 按下去效果 */
+        div.stButton > button[kind="primary"]:active {
+            background-color: #aadaff !important; 
+            border-color: #98cfff !important;
+            box-shadow: 0 0 2px rgba(160, 205, 255, 0.7) inset !important;
+        }
+        
+        /* focus 鍵盤切換時的外框效果 */
+        div.stButton > button[kind="primary"]:focus {
+            outline: none !important;
+            box-shadow: 0 0 4px rgba(140, 200, 255, 0.9) !important;
         }
         /* 使左右兩側容器內的按鈕樣式不被誤改（保守） */
         </style>
