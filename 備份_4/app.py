@@ -64,19 +64,17 @@ if "file_previews" not in st.session_state:
     st.session_state["file_previews"] = {}  # {filename: file_bytes}
 if "row_to_file_mapping" not in st.session_state:
     st.session_state["row_to_file_mapping"] = []  # List of (row_index, filename) tuples
-# 新增：編輯版 DataFrame 快取與對應下載 bytes
-if "edited_dataframe" not in st.session_state:
-    st.session_state["edited_dataframe"] = None
-if "edited_csv" not in st.session_state:
-    st.session_state["edited_csv"] = b""
+
 
 def save_api_key():
     key = (st.session_state.get("input_gemini_api_key") or "").strip()
     st.session_state["GEMINI_API_KEY"] = key or None
 
+
 def clear_api_key():
     st.session_state["GEMINI_API_KEY"] = None
     st.session_state["input_gemini_api_key"] = ""
+
 
 def get_gemini_api_key() -> Optional[str]:
     try:
@@ -98,8 +96,10 @@ def get_gemini_api_key() -> Optional[str]:
 
     return None
 
+
 def clear_uploads():
     st.session_state["uploader_key"] += 1
+
 
 # Helper to submit to global executor while bounding pending tasks
 def submit_task(fn, *args, **kwargs):
@@ -235,23 +235,6 @@ def filename_for_row(selected_row: int, mapping: Any) -> Optional[str]:
     except Exception:
         pass
     return None
-
-
-# 回呼：當 data_editor 的 widget 值改變時執行，立即保存編輯結果
-def _on_data_editor_change():
-    val = st.session_state.get("data_editor")
-    if isinstance(val, pd.DataFrame):
-        # 保存使用者的編輯快取
-        st.session_state["edited_dataframe"] = val.copy()
-        # 同步更新可下載的 CSV bytes
-        try:
-            buf = io.StringIO()
-            val.to_csv(buf, index=False, encoding="utf-8-sig")
-            safe = sanitize_csv_for_excel(buf.getvalue())
-            st.session_state["edited_csv"] = safe.encode("utf-8-sig")
-        except Exception:
-            # 忽略轉換失敗但不要清掉 edited_dataframe
-            pass
 
 
 # ========== Streamlit UI ==========
@@ -405,21 +388,21 @@ def main() -> None:
             box-shadow: none !important;
             transition: background-color 0.2s ease, box-shadow 0.2s ease;
         }
-
+        
         /* hover 滑過效果 */
         div.stButton > button[kind="primary"]:hover {
             background-color: #bde6ff !important; /* 稍微深一點藍 */
             border-color: #a9d7ff !important;
             box-shadow: 0 0 4px rgba(188, 224, 255, 0.9) !important; /* 微光 */
         }
-
+        
         /* active 按下去效果 */
         div.stButton > button[kind="primary"]:active {
-            background-color: #aadaff !important;
+            background-color: #aadaff !important; 
             border-color: #98cfff !important;
             box-shadow: 0 0 2px rgba(160, 205, 255, 0.7) inset !important;
         }
-
+        
         /* focus 鍵盤切換時的外框效果 */
         div.stButton > button[kind="primary"]:focus {
             outline: none !important;
@@ -565,9 +548,6 @@ def main() -> None:
                 if csv_text:
                     df = csv_to_dataframe(csv_text)
                     st.session_state["parsed_dataframe"] = df.copy()
-                    # 解析新檔案時清除舊的編輯快取，開始新的編輯階段
-                    st.session_state["edited_dataframe"] = None
-                    st.session_state["edited_csv"] = b""
             except Exception:
                 st.warning("CSV 預覽失敗，但仍可下載原始文字。請檢查欄位與分隔符號（建議確保逗號分隔與首列表頭）。")
                 st.session_state["parsed_dataframe"] = None
@@ -607,79 +587,19 @@ def main() -> None:
                 """,
                 unsafe_allow_html=True
             )
-
-            # 編輯器使用：優先載入 session 中已存在的 edited_dataframe，否則使用 parsed_df
-            edited_session_df = st.session_state.get("edited_dataframe")
-            if edited_session_df is not None:
-                base_df = edited_session_df.copy()
-            else:
-                base_df = parsed_df.copy()
-
-            # 將 base_df 複製為編輯用，並確保「假別」與「備註」為字串，以避免 TextColumn 與 float 型態衝突
-            df_for_editor = base_df.copy()
-            for _col in ("派駐單位", "姓名", "假別", "請假起日", "請假迄日", "請假時間(起)", "請假時間(迄)", "備註"):
-                if _col in df_for_editor.columns:
-                    try:
-                        df_for_editor[_col] = df_for_editor[_col].fillna("").astype(str)
-                    except Exception:
-                        df_for_editor[_col] = df_for_editor[_col].apply(lambda v: "" if pd.isna(v) else str(v))
-
-            # 只讓「假別」與「備註」成為可鍵入文字欄位（若存在）
-            column_config = {}
-            try:
-                if "派駐單位" in df_for_editor.columns:
-                    column_config["派駐單位"] = st.column_config.TextColumn("派駐單位", required=False)
-                if "姓名" in df_for_editor.columns:
-                    column_config["姓名"] = st.column_config.TextColumn("姓名", required=False)
-                if "假別" in df_for_editor.columns:
-                    column_config["假別"] = st.column_config.TextColumn("假別", required=False)
-                if "請假起日" in df_for_editor.columns:
-                    column_config["請假起日"] = st.column_config.TextColumn("請假起日", required=False)
-                if "請假迄日" in df_for_editor.columns:
-                    column_config["請假迄日"] = st.column_config.TextColumn("請假迄日", required=False)
-                if "請假時間(起)" in df_for_editor.columns:
-                    column_config["請假時間(起)"] = st.column_config.TextColumn("請假時間(起)", required=False)
-                if "請假時間(迄)" in df_for_editor.columns:
-                    column_config["請假時間(迄)"] = st.column_config.TextColumn("請假時間(迄)", required=False)
-                if "備註" in df_for_editor.columns:
-                    column_config["備註"] = st.column_config.TextColumn("備註", required=False)
-            except Exception:
-                # 若環境不支援 column_config API，則忽略並使用預設 DataEditor 行為
-                column_config = {}
-
-            col_cfg = column_config if column_config else None
-
-            # 使用 on_change 回呼，確保每次使用者修改都會寫回 session（避免 rerun 時丟失）
             edited_df = st.data_editor(
-                df_for_editor,
-                column_config=col_cfg,
+                parsed_df,
                 width="stretch",
                 num_rows="fixed",
-                key="data_editor",
-                on_change=_on_data_editor_change
+                key="data_editor"
             )
+            st.session_state["parsed_dataframe"] = edited_df.copy()
 
-            # 若 session 中尚未有 edited cache，則以 widget 初始值同步一次（只在第一次 render）
-            if st.session_state.get("edited_dataframe") is None and isinstance(edited_df, pd.DataFrame):
-                st.session_state["edited_dataframe"] = edited_df.copy()
-                try:
-                    buf = io.StringIO()
-                    edited_df.to_csv(buf, index=False, encoding="utf-8-sig")
-                    st.session_state["edited_csv"] = sanitize_csv_for_excel(buf.getvalue()).encode("utf-8-sig")
-                except Exception:
-                    pass
-            else:
-                # 若 session 中已有 edited cache，使用該快取作為最終來源（避免覆寫）
-                edited_df = st.session_state.get("edited_dataframe", edited_df)
-
-            # 更新下載用 CSV（使用 edited_df）
-            try:
-                buf = io.StringIO()
-                edited_df.to_csv(buf, index=False, encoding="utf-8-sig")
-                safe_csv = sanitize_csv_for_excel(buf.getvalue())
-                st.session_state["edited_csv"] = safe_csv.encode("utf-8-sig")
-            except Exception:
-                pass
+            csv_buffer = io.StringIO()
+            edited_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
+            csv_text_edited = csv_buffer.getvalue()
+            safe_csv = sanitize_csv_for_excel(csv_text_edited)
+            st.session_state["edited_csv"] = safe_csv.encode("utf-8-sig")
 
         with right_col:
             st.markdown("**檔案預覽**")

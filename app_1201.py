@@ -617,7 +617,7 @@ def main() -> None:
 
             # 將 base_df 複製為編輯用，並確保「假別」與「備註」為字串，以避免 TextColumn 與 float 型態衝突
             df_for_editor = base_df.copy()
-            for _col in ("派駐單位", "姓名", "假別", "請假起日", "請假迄日", "請假時間(起)", "請假時間(迄)", "備註"):
+            for _col in ("派駐單位", "假別", "請假起日", "請假迄日", "請假時間(起)", "請假時間(迄)", "備註"):
                 if _col in df_for_editor.columns:
                     try:
                         df_for_editor[_col] = df_for_editor[_col].fillna("").astype(str)
@@ -629,8 +629,6 @@ def main() -> None:
             try:
                 if "派駐單位" in df_for_editor.columns:
                     column_config["派駐單位"] = st.column_config.TextColumn("派駐單位", required=False)
-                if "姓名" in df_for_editor.columns:
-                    column_config["姓名"] = st.column_config.TextColumn("姓名", required=False)
                 if "假別" in df_for_editor.columns:
                     column_config["假別"] = st.column_config.TextColumn("假別", required=False)
                 if "請假起日" in df_for_editor.columns:
