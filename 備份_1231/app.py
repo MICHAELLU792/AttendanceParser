@@ -155,96 +155,73 @@ def generate_monthly_dates(year: int, month: int) -> list[str]:
     return dates
 
 def expand_dataframe_to_monthly(df: pd.DataFrame, filename: str) -> pd.DataFrame:
-    """将DataFrame扩展为包含该月所有日期的完整列表，并处理跨月数据"""
-    from app_config import CSV_HEADERS
-    from datetime import datetime
-    
-    # 确定主要月份：优先从出勤记录的日期推断，如果没有出勤记录，则从第一个记录的日期推断
-    main_year, main_month = None, None
-    
-    if not df.empty and "日期" in df.columns and "記錄類型" in df.columns:
-        # 优先找出勤记录的日期
-        for _, row in df.iterrows():
-            record_type_val = row.get("記錄類型", "")
-            record_type = str(record_type_val).strip() if pd.notna(record_type_val) else ""
-            if record_type == "出勤":
-                date_val = row.get("日期", "")
-                if pd.notna(date_val) and str(date_val).strip():
-                    try:
-                        date_obj = pd.to_datetime(str(date_val).strip())
-                        main_year, main_month = date_obj.year, date_obj.month
-                        break
-                    except Exception:
-                        continue
-        
-        # 如果没有出勤记录，找第一个有效日期
-        if main_year is None:
-            for _, row in df.iterrows():
-                date_val = row.get("日期", "")
-                if pd.notna(date_val) and str(date_val).strip():
-                    try:
-                        date_obj = pd.to_datetime(str(date_val).strip())
-                        main_year, main_month = date_obj.year, date_obj.month
-                        break
-                    except Exception:
-                        continue
-    
-    # 如果还是无法确定，使用当前年月
-    if main_year is None:
+    """将DataFrame扩展为包含该月所有日期的完整列表"""
+    if df.empty:
+        # 如果DataFrame为空，尝试从文件名推断年月
+        # 这里假设文件名可能包含日期信息，如果没有则使用当前年月
+        from datetime import datetime
         now = datetime.now()
-        main_year, main_month = now.year, now.month
-    
-    # 生成主要月份的所有日期
-    main_dates = set(generate_monthly_dates(main_year, main_month))
+        year, month = now.year, now.month
+        dates = generate_monthly_dates(year, month)
+    else:
+        # 从DataFrame中的日期列推断年月
+        date_col = "日期"
+        if date_col not in df.columns:
+            from datetime import datetime
+            now = datetime.now()
+            year, month = now.year, now.month
+        else:
+            # 找到第一个有效日期
+            first_date = None
+            for val in df[date_col]:
+                if pd.notna(val) and str(val).strip():
+                    try:
+                        first_date = pd.to_datetime(str(val).strip())
+                        break
+                    except Exception:
+                        continue
+            
+            if first_date is None:
+                from datetime import datetime
+                now = datetime.now()
+                year, month = now.year, now.month
+            else:
+                year, month = first_date.year, first_date.month
+        
+        dates = generate_monthly_dates(year, month)
     
     # 创建完整的日期DataFrame
+    from app_config import CSV_HEADERS
     full_df = pd.DataFrame(columns=CSV_HEADERS)
     
-    # 将现有数据分类：主要月份内的数据和主要月份外的数据
-    data_in_main_month = {}  # {date_str: [row_dict, ...]}
-    data_outside_main_month = []  # [row_dict, ...]
-    
+    # 将现有数据按日期索引
+    existing_data = {}
     if not df.empty and "日期" in df.columns:
         for _, row in df.iterrows():
-            row_dict = row.to_dict()
             date_val = row.get("日期", "")
-            
             if pd.notna(date_val) and str(date_val).strip():
+                date_str = str(date_val).strip()
+                # 标准化日期格式
                 try:
-                    date_obj = pd.to_datetime(str(date_val).strip())
+                    date_obj = pd.to_datetime(date_str)
                     date_str = date_obj.strftime("%Y-%m-%d")
-                    
-                    # 判断是否在主要月份内
-                    if date_str in main_dates:
-                        if date_str not in data_in_main_month:
-                            data_in_main_month[date_str] = []
-                        data_in_main_month[date_str].append(row_dict)
-                    else:
-                        # 不在主要月份内，append到外部数据列表
-                        data_outside_main_month.append(row_dict)
+                    if date_str not in existing_data:
+                        existing_data[date_str] = []
+                    existing_data[date_str].append(row.to_dict())
                 except Exception:
-                    # 日期解析失败，也加入到外部数据列表
-                    data_outside_main_month.append(row_dict)
-            else:
-                # 没有日期，也加入到外部数据列表（可能是跨月请假/加班的记录）
-                data_outside_main_month.append(row_dict)
+                    pass
     
-    # 为主要月份的每个日期创建行
-    main_dates_sorted = sorted(main_dates)
-    for date_str in main_dates_sorted:
-        if date_str in data_in_main_month:
+    # 为每个日期创建行
+    for date_str in dates:
+        if date_str in existing_data:
             # 如果该日期有数据，使用现有数据
-            for row_dict in data_in_main_month[date_str]:
+            for row_dict in existing_data[date_str]:
                 new_row = {col: row_dict.get(col, "") for col in CSV_HEADERS}
                 new_row["日期"] = date_str
                 # 如果是出勤记录，计算总时数
-                record_type_val = new_row.get("記錄類型", "")
-                record_type = str(record_type_val).strip() if pd.notna(record_type_val) and record_type_val != "" else ""
-                if record_type == "出勤":
-                    start_time_val = new_row.get("上班時間", "")
-                    end_time_val = new_row.get("下班時間", "")
-                    start_time = str(start_time_val).strip() if pd.notna(start_time_val) and start_time_val != "" else ""
-                    end_time = str(end_time_val).strip() if pd.notna(end_time_val) and end_time_val != "" else ""
+                if new_row.get("記錄類型", "").strip() == "出勤":
+                    start_time = new_row.get("上班時間", "")
+                    end_time = new_row.get("下班時間", "")
                     if start_time and end_time:
                         new_row["總時數"] = calculate_hours(start_time, end_time)
                 full_df = pd.concat([full_df, pd.DataFrame([new_row])], ignore_index=True)
@@ -253,30 +230,6 @@ def expand_dataframe_to_monthly(df: pd.DataFrame, filename: str) -> pd.DataFrame
             new_row = {col: "" for col in CSV_HEADERS}
             new_row["日期"] = date_str
             full_df = pd.concat([full_df, pd.DataFrame([new_row])], ignore_index=True)
-    
-    # 将主要月份外的数据 append 在最后面
-    for row_dict in data_outside_main_month:
-        new_row = {col: row_dict.get(col, "") for col in CSV_HEADERS}
-        # 保持原有日期（如果有的话）
-        if "日期" not in new_row or not new_row["日期"]:
-            date_val = row_dict.get("日期", "")
-            if pd.notna(date_val) and str(date_val).strip():
-                try:
-                    date_obj = pd.to_datetime(str(date_val).strip())
-                    new_row["日期"] = date_obj.strftime("%Y-%m-%d")
-                except Exception:
-                    new_row["日期"] = ""
-        # 如果是出勤记录，计算总时数
-        record_type_val = new_row.get("記錄類型", "")
-        record_type = str(record_type_val).strip() if pd.notna(record_type_val) and record_type_val != "" else ""
-        if record_type == "出勤":
-            start_time_val = new_row.get("上班時間", "")
-            end_time_val = new_row.get("下班時間", "")
-            start_time = str(start_time_val).strip() if pd.notna(start_time_val) and start_time_val != "" else ""
-            end_time = str(end_time_val).strip() if pd.notna(end_time_val) and end_time_val != "" else ""
-            if start_time and end_time:
-                new_row["總時數"] = calculate_hours(start_time, end_time)
-        full_df = pd.concat([full_df, pd.DataFrame([new_row])], ignore_index=True)
     
     return full_df
 
@@ -787,12 +740,7 @@ def main() -> None:
                     try:
                         text = fut.result()
                     except Exception as e:
-                        error_msg = str(e)
-                        # 如果是429错误，提供更友好的错误信息
-                        if "429" in error_msg or "資源耗盡" in error_msg or "Resource exhausted" in error_msg:
-                            st.error(f"檔案 {filename} 處理失敗：API資源耗盡（429錯誤）。請稍後再試或減少同時處理的檔案數量。")
-                        else:
-                            st.warning(f"檔案 {filename} 處理失敗：{e}")
+                        st.warning(f"檔案 {filename} 處理失敗：{e}")
                         continue
                     if not text:
                         continue
@@ -858,16 +806,10 @@ def main() -> None:
                         expanded_df = expand_dataframe_to_monthly(file_df, filename)
                         # 计算总时数（对于出勤记录）
                         for idx, row in expanded_df.iterrows():
-                            record_type_val = row.get("記錄類型", "")
-                            record_type = str(record_type_val).strip() if pd.notna(record_type_val) and record_type_val != "" else ""
-                            if record_type == "出勤":
-                                start_time_val = row.get("上班時間", "")
-                                end_time_val = row.get("下班時間", "")
-                                start_time = str(start_time_val).strip() if pd.notna(start_time_val) and start_time_val != "" else ""
-                                end_time = str(end_time_val).strip() if pd.notna(end_time_val) and end_time_val != "" else ""
-                                total_hours_val = row.get("總時數", "")
-                                total_hours = str(total_hours_val).strip() if pd.notna(total_hours_val) and total_hours_val != "" else ""
-                                if start_time and end_time and not total_hours:
+                            if row.get("記錄類型", "").strip() == "出勤":
+                                start_time = row.get("上班時間", "")
+                                end_time = row.get("下班時間", "")
+                                if start_time and end_time and not row.get("總時數", ""):
                                     expanded_df.at[idx, "總時數"] = calculate_hours(start_time, end_time)
                         df_by_file[filename] = expanded_df
                     

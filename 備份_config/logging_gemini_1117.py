@@ -15,18 +15,8 @@ logger = logging.getLogger(__name__)
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 
 # 每 1,000,000 tokens 的價格（USD）
-# 參考 Gemini 官方定價：
-# gemini-2.0-flash      input: $0.15 / 1M, output: $0.60 / 1M
-# gemini-2.0-flash-lite input: $0.075 / 1M, output: $0.30 / 1M
 MODEL_PRICING = {
-    "gemini-2.0-flash": {
-        "input_per_million": 0.15,
-        "output_per_million": 0.60,
-    },
-    "gemini-3-flash-preview": {
-        "input_per_million": 0.15,
-        "output_per_million": 0.60,
-    },
+    "gemini-2.0-flash": {"input_per_million": 0.10, "output_per_million": 0.40},
 }
 
 # 用於避免同時執行多個 flush 的鎖
@@ -166,18 +156,9 @@ def _extract_tokens(metadata: Any) -> Tuple[int, int, int]:
             total_acc = 0
             for c in metadata["candidates"]:
                 if isinstance(c, dict):
-                    prompt_acc = max(
-                        prompt_acc,
-                        _safe_int(c.get("prompt_token_count") or c.get("input_tokens") or 0),
-                    )
-                    output_acc = max(
-                        output_acc,
-                        _safe_int(c.get("candidates_token_count") or c.get("output_tokens") or 0),
-                    )
-                    total_acc = max(
-                        total_acc,
-                        _safe_int(c.get("total_token_count") or c.get("token_count") or 0),
-                    )
+                    prompt_acc = max(prompt_acc, _safe_int(c.get("prompt_token_count") or c.get("input_tokens") or 0))
+                    output_acc = max(output_acc, _safe_int(c.get("candidates_token_count") or c.get("output_tokens") or 0))
+                    total_acc = max(total_acc, _safe_int(c.get("total_token_count") or c.get("token_count") or 0))
                     sub = _find_token_values(c)
                     prompt_acc = max(prompt_acc, sub["prompt"])
                     output_acc = max(output_acc, sub["output"])
@@ -262,14 +243,7 @@ def _csv_header_line(fieldnames) -> str:
     return header
 
 
-def _write_row_with_retries(
-    log_path: Path,
-    fieldnames,
-    row: dict,
-    is_empty: bool,
-    max_retries: int = 3,
-    retry_delay: float = 0.1,
-) -> bool:
+def _write_row_with_retries(log_path: Path, fieldnames, row: dict, is_empty: bool, max_retries: int = 3, retry_delay: float = 0.1) -> bool:
     header_line = _csv_header_line(fieldnames)
     line = _csv_line_from_row(fieldnames, row)
 
@@ -344,7 +318,6 @@ def log_gemini_usage(
                             _flush_lock.release()
                         except Exception:
                             pass
-
                 threading.Thread(target=_bg_worker, daemon=True).start()
             else:
                 logger.debug("flush_pending_to_main already running, skip starting another")
@@ -519,9 +492,9 @@ def flush_pending_to_main() -> None:
                     logger.info("已把 %d pending 列寫入 %s", len(rows), str(log_path))
                 except Exception:
                     logger.exception("寫入主檔失敗: %s", str(log_path))
-                    for p2, lst in file_map.items():
+                    for p, lst in file_map.items():
                         if log_path in lst:
-                            write_success_for_pending[p2] = False
+                            write_success_for_pending[p] = False
         finally:
             if locked:
                 _release_lock(lock_path)

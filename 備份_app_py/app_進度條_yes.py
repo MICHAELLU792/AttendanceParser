@@ -106,180 +106,6 @@ def get_gemini_api_key() -> Optional[str]:
 def clear_uploads():
     st.session_state["uploader_key"] += 1
 
-def calculate_hours(start_time: str, end_time: str) -> str:
-    """计算两个时间之间的总时数（小时），格式：HH:MM -> 小时数（浮点数）"""
-    if not start_time or not end_time or pd.isna(start_time) or pd.isna(end_time):
-        return ""
-    
-    try:
-        start_time = str(start_time).strip()
-        end_time = str(end_time).strip()
-        if not start_time or not end_time:
-            return ""
-        
-        # 解析时间格式 HH:MM
-        def parse_time(t: str) -> Optional[float]:
-            parts = t.split(":")
-            if len(parts) == 2:
-                try:
-                    hours = int(parts[0])
-                    minutes = int(parts[1])
-                    return hours + minutes / 60.0
-                except ValueError:
-                    return None
-            return None
-        
-        start = parse_time(start_time)
-        end = parse_time(end_time)
-        
-        if start is None or end is None:
-            return ""
-        
-        # 处理跨日情况（如果结束时间小于开始时间，假设是第二天）
-        if end < start:
-            end += 24
-        
-        hours = end - start
-        # 格式化为保留2位小数的字符串
-        return f"{hours:.2f}"
-    except Exception:
-        return ""
-
-def generate_monthly_dates(year: int, month: int) -> list[str]:
-    """生成指定年月的所有日期列表（YYYY-MM-DD格式）"""
-    import calendar
-    days_in_month = calendar.monthrange(year, month)[1]
-    dates = []
-    for day in range(1, days_in_month + 1):
-        dates.append(f"{year}-{month:02d}-{day:02d}")
-    return dates
-
-def expand_dataframe_to_monthly(df: pd.DataFrame, filename: str) -> pd.DataFrame:
-    """将DataFrame扩展为包含该月所有日期的完整列表，并处理跨月数据"""
-    from app_config import CSV_HEADERS
-    from datetime import datetime
-    
-    # 确定主要月份：优先从出勤记录的日期推断，如果没有出勤记录，则从第一个记录的日期推断
-    main_year, main_month = None, None
-    
-    if not df.empty and "日期" in df.columns and "記錄類型" in df.columns:
-        # 优先找出勤记录的日期
-        for _, row in df.iterrows():
-            record_type_val = row.get("記錄類型", "")
-            record_type = str(record_type_val).strip() if pd.notna(record_type_val) else ""
-            if record_type == "出勤":
-                date_val = row.get("日期", "")
-                if pd.notna(date_val) and str(date_val).strip():
-                    try:
-                        date_obj = pd.to_datetime(str(date_val).strip())
-                        main_year, main_month = date_obj.year, date_obj.month
-                        break
-                    except Exception:
-                        continue
-        
-        # 如果没有出勤记录，找第一个有效日期
-        if main_year is None:
-            for _, row in df.iterrows():
-                date_val = row.get("日期", "")
-                if pd.notna(date_val) and str(date_val).strip():
-                    try:
-                        date_obj = pd.to_datetime(str(date_val).strip())
-                        main_year, main_month = date_obj.year, date_obj.month
-                        break
-                    except Exception:
-                        continue
-    
-    # 如果还是无法确定，使用当前年月
-    if main_year is None:
-        now = datetime.now()
-        main_year, main_month = now.year, now.month
-    
-    # 生成主要月份的所有日期
-    main_dates = set(generate_monthly_dates(main_year, main_month))
-    
-    # 创建完整的日期DataFrame
-    full_df = pd.DataFrame(columns=CSV_HEADERS)
-    
-    # 将现有数据分类：主要月份内的数据和主要月份外的数据
-    data_in_main_month = {}  # {date_str: [row_dict, ...]}
-    data_outside_main_month = []  # [row_dict, ...]
-    
-    if not df.empty and "日期" in df.columns:
-        for _, row in df.iterrows():
-            row_dict = row.to_dict()
-            date_val = row.get("日期", "")
-            
-            if pd.notna(date_val) and str(date_val).strip():
-                try:
-                    date_obj = pd.to_datetime(str(date_val).strip())
-                    date_str = date_obj.strftime("%Y-%m-%d")
-                    
-                    # 判断是否在主要月份内
-                    if date_str in main_dates:
-                        if date_str not in data_in_main_month:
-                            data_in_main_month[date_str] = []
-                        data_in_main_month[date_str].append(row_dict)
-                    else:
-                        # 不在主要月份内，append到外部数据列表
-                        data_outside_main_month.append(row_dict)
-                except Exception:
-                    # 日期解析失败，也加入到外部数据列表
-                    data_outside_main_month.append(row_dict)
-            else:
-                # 没有日期，也加入到外部数据列表（可能是跨月请假/加班的记录）
-                data_outside_main_month.append(row_dict)
-    
-    # 为主要月份的每个日期创建行
-    main_dates_sorted = sorted(main_dates)
-    for date_str in main_dates_sorted:
-        if date_str in data_in_main_month:
-            # 如果该日期有数据，使用现有数据
-            for row_dict in data_in_main_month[date_str]:
-                new_row = {col: row_dict.get(col, "") for col in CSV_HEADERS}
-                new_row["日期"] = date_str
-                # 如果是出勤记录，计算总时数
-                record_type_val = new_row.get("記錄類型", "")
-                record_type = str(record_type_val).strip() if pd.notna(record_type_val) and record_type_val != "" else ""
-                if record_type == "出勤":
-                    start_time_val = new_row.get("上班時間", "")
-                    end_time_val = new_row.get("下班時間", "")
-                    start_time = str(start_time_val).strip() if pd.notna(start_time_val) and start_time_val != "" else ""
-                    end_time = str(end_time_val).strip() if pd.notna(end_time_val) and end_time_val != "" else ""
-                    if start_time and end_time:
-                        new_row["總時數"] = calculate_hours(start_time, end_time)
-                full_df = pd.concat([full_df, pd.DataFrame([new_row])], ignore_index=True)
-        else:
-            # 如果该日期没有数据，创建空行（只填日期）
-            new_row = {col: "" for col in CSV_HEADERS}
-            new_row["日期"] = date_str
-            full_df = pd.concat([full_df, pd.DataFrame([new_row])], ignore_index=True)
-    
-    # 将主要月份外的数据 append 在最后面
-    for row_dict in data_outside_main_month:
-        new_row = {col: row_dict.get(col, "") for col in CSV_HEADERS}
-        # 保持原有日期（如果有的话）
-        if "日期" not in new_row or not new_row["日期"]:
-            date_val = row_dict.get("日期", "")
-            if pd.notna(date_val) and str(date_val).strip():
-                try:
-                    date_obj = pd.to_datetime(str(date_val).strip())
-                    new_row["日期"] = date_obj.strftime("%Y-%m-%d")
-                except Exception:
-                    new_row["日期"] = ""
-        # 如果是出勤记录，计算总时数
-        record_type_val = new_row.get("記錄類型", "")
-        record_type = str(record_type_val).strip() if pd.notna(record_type_val) and record_type_val != "" else ""
-        if record_type == "出勤":
-            start_time_val = new_row.get("上班時間", "")
-            end_time_val = new_row.get("下班時間", "")
-            start_time = str(start_time_val).strip() if pd.notna(start_time_val) and start_time_val != "" else ""
-            end_time = str(end_time_val).strip() if pd.notna(end_time_val) and end_time_val != "" else ""
-            if start_time and end_time:
-                new_row["總時數"] = calculate_hours(start_time, end_time)
-        full_df = pd.concat([full_df, pd.DataFrame([new_row])], ignore_index=True)
-    
-    return full_df
-
 # Helper to submit to global executor while bounding pending tasks
 def submit_task(fn, *args, **kwargs):
     # Acquire slot for pending+running tasks
@@ -787,12 +613,7 @@ def main() -> None:
                     try:
                         text = fut.result()
                     except Exception as e:
-                        error_msg = str(e)
-                        # 如果是429错误，提供更友好的错误信息
-                        if "429" in error_msg or "資源耗盡" in error_msg or "Resource exhausted" in error_msg:
-                            st.error(f"檔案 {filename} 處理失敗：API資源耗盡（429錯誤）。請稍後再試或減少同時處理的檔案數量。")
-                        else:
-                            st.warning(f"檔案 {filename} 處理失敗：{e}")
+                        st.warning(f"檔案 {filename} 處理失敗：{e}")
                         continue
                     if not text:
                         continue
@@ -806,7 +627,7 @@ def main() -> None:
                         all_rows.extend(lines)
                     except Exception:
                         all_rows.append(text)
-
+                
                 progress_bar.progress(1.0)
                 status_text.text(f"完成！已處理 {completed}/{total_files} 個檔案")
                 progress_bar.empty()
@@ -850,26 +671,10 @@ def main() -> None:
                                 data_by_file[filename] = []
                             data_by_file[filename].append(row_idx)
                     
-                    # 为每个文件创建DataFrame，并扩展为完整的月份日期列表
+                    # 为每个文件创建DataFrame
                     df_by_file = {}
                     for filename, row_indices in data_by_file.items():
-                        file_df = df.iloc[row_indices].copy().reset_index(drop=True)
-                        # 扩展为完整的月份日期列表
-                        expanded_df = expand_dataframe_to_monthly(file_df, filename)
-                        # 计算总时数（对于出勤记录）
-                        for idx, row in expanded_df.iterrows():
-                            record_type_val = row.get("記錄類型", "")
-                            record_type = str(record_type_val).strip() if pd.notna(record_type_val) and record_type_val != "" else ""
-                            if record_type == "出勤":
-                                start_time_val = row.get("上班時間", "")
-                                end_time_val = row.get("下班時間", "")
-                                start_time = str(start_time_val).strip() if pd.notna(start_time_val) and start_time_val != "" else ""
-                                end_time = str(end_time_val).strip() if pd.notna(end_time_val) and end_time_val != "" else ""
-                                total_hours_val = row.get("總時數", "")
-                                total_hours = str(total_hours_val).strip() if pd.notna(total_hours_val) and total_hours_val != "" else ""
-                                if start_time and end_time and not total_hours:
-                                    expanded_df.at[idx, "總時數"] = calculate_hours(start_time, end_time)
-                        df_by_file[filename] = expanded_df
+                        df_by_file[filename] = df.iloc[row_indices].copy().reset_index(drop=True)
                     
                     st.session_state["data_by_file"] = df_by_file
                     st.session_state["edited_data_by_file"] = {}
@@ -910,58 +715,6 @@ def main() -> None:
             /* 优化粘贴体验 */
             .stDataEditor [contenteditable="true"] {
                 white-space: pre-wrap;
-            }
-            /* 出勤日期时间group的背景色（浅蓝色）- 索引0-6 */
-            .stDataEditor th[data-column-index="0"],
-            .stDataEditor th[data-column-index="1"],
-            .stDataEditor th[data-column-index="2"],
-            .stDataEditor th[data-column-index="3"],
-            .stDataEditor th[data-column-index="4"],
-            .stDataEditor th[data-column-index="5"],
-            .stDataEditor th[data-column-index="6"],
-            .stDataEditor td[data-column-index="0"],
-            .stDataEditor td[data-column-index="1"],
-            .stDataEditor td[data-column-index="2"],
-            .stDataEditor td[data-column-index="3"],
-            .stDataEditor td[data-column-index="4"],
-            .stDataEditor td[data-column-index="5"],
-            .stDataEditor td[data-column-index="6"] {
-                background-color: #e3f2fd !important;
-            }
-            /* 请假group的背景色（浅绿色）- 索引7-13 */
-            .stDataEditor th[data-column-index="7"],
-            .stDataEditor th[data-column-index="8"],
-            .stDataEditor th[data-column-index="9"],
-            .stDataEditor th[data-column-index="10"],
-            .stDataEditor th[data-column-index="11"],
-            .stDataEditor th[data-column-index="12"],
-            .stDataEditor th[data-column-index="13"],
-            .stDataEditor td[data-column-index="7"],
-            .stDataEditor td[data-column-index="8"],
-            .stDataEditor td[data-column-index="9"],
-            .stDataEditor td[data-column-index="10"],
-            .stDataEditor td[data-column-index="11"],
-            .stDataEditor td[data-column-index="12"],
-            .stDataEditor td[data-column-index="13"] {
-                background-color: #e8f5e9 !important;
-            }
-            /* 加班group的背景色（浅橙色）- 索引14-18 */
-            .stDataEditor th[data-column-index="14"],
-            .stDataEditor th[data-column-index="15"],
-            .stDataEditor th[data-column-index="16"],
-            .stDataEditor th[data-column-index="17"],
-            .stDataEditor th[data-column-index="18"],
-            .stDataEditor td[data-column-index="14"],
-            .stDataEditor td[data-column-index="15"],
-            .stDataEditor td[data-column-index="16"],
-            .stDataEditor td[data-column-index="17"],
-            .stDataEditor td[data-column-index="18"] {
-                background-color: #fff3e0 !important;
-            }
-            /* 备注列的背景色（浅灰色）- 索引19 */
-            .stDataEditor th[data-column-index="19"],
-            .stDataEditor td[data-column-index="19"] {
-                background-color: #f5f5f5 !important;
             }
             </style>
             """,
@@ -1043,49 +796,21 @@ def main() -> None:
                     
                     col_cfg = column_config if column_config else None
                     
-                    # 在显示前，自动计算总时数（对于出勤记录）
-                    if "記錄類型" in df_for_editor.columns and "上班時間" in df_for_editor.columns and "下班時間" in df_for_editor.columns and "總時數" in df_for_editor.columns:
-                        for idx in df_for_editor.index:
-                            record_type = str(df_for_editor.at[idx, "記錄類型"]).strip() if pd.notna(df_for_editor.at[idx, "記錄類型"]) else ""
-                            if record_type == "出勤":
-                                start_time = str(df_for_editor.at[idx, "上班時間"]).strip() if pd.notna(df_for_editor.at[idx, "上班時間"]) else ""
-                                end_time = str(df_for_editor.at[idx, "下班時間"]).strip() if pd.notna(df_for_editor.at[idx, "下班時間"]) else ""
-                                current_hours = str(df_for_editor.at[idx, "總時數"]).strip() if pd.notna(df_for_editor.at[idx, "總時數"]) else ""
-                                if start_time and end_time and (not current_hours or current_hours == "" or current_hours == "nan"):
-                                    hours = calculate_hours(start_time, end_time)
-                                    df_for_editor.at[idx, "總時數"] = hours
-                    
                     editor_key = f"data_editor_{filename}"
                     
-                    # 创建回调函数：确保每次编辑都保存，并自动计算总时数
+                    # 创建回调函数：确保每次编辑都保存
                     def make_on_change(fname):
                         def on_change():
                             try:
                                 val = st.session_state.get(f"data_editor_{fname}")
                                 if isinstance(val, pd.DataFrame):
-                                    # 自动计算总时数（对于出勤记录）
-                                    df_copy = val.copy()
-                                    if "記錄類型" in df_copy.columns and "上班時間" in df_copy.columns and "下班時間" in df_copy.columns and "總時數" in df_copy.columns:
-                                        for idx in df_copy.index:
-                                            record_type = str(df_copy.at[idx, "記錄類型"]).strip() if pd.notna(df_copy.at[idx, "記錄類型"]) else ""
-                                            if record_type == "出勤":
-                                                start_time = str(df_copy.at[idx, "上班時間"]).strip() if pd.notna(df_copy.at[idx, "上班時間"]) else ""
-                                                end_time = str(df_copy.at[idx, "下班時間"]).strip() if pd.notna(df_copy.at[idx, "下班時間"]) else ""
-                                                if start_time and end_time:
-                                                    hours = calculate_hours(start_time, end_time)
-                                                    df_copy.at[idx, "總時數"] = hours
-                                    
                                     # 立即保存到edited_data_by_file
                                     edited_data_by_file = st.session_state.get("edited_data_by_file", {})
-                                    if not isinstance(edited_data_by_file, dict):
-                                        edited_data_by_file = {}
-                                    edited_data_by_file[fname] = df_copy
+                                    edited_data_by_file[fname] = val.copy()
                                     st.session_state["edited_data_by_file"] = edited_data_by_file
                             except Exception as e:
-                                # 记录错误但不中断用户体验
-                                import traceback
-                                print(f"Error in on_change callback for {fname}: {e}")
-                                print(traceback.format_exc())
+                                # 静默处理错误，避免中断用户体验
+                                pass
                         return on_change
                     
                     # st.data_editor原生支持Excel式大范围粘贴（多行多列）
@@ -1093,26 +818,26 @@ def main() -> None:
                     edited_df = st.data_editor(
                         df_for_editor,
                         column_config=col_cfg,
-                        width='stretch',
+                        use_container_width=True,
                         num_rows="dynamic",  # 改为dynamic以支持添加行，方便大范围粘贴
                         key=editor_key,
                         on_change=make_on_change(filename)
                     )
                     
-                    # 只在首次初始化时保存，避免每次渲染都更新session_state导致重新渲染
-                    # 后续的编辑由on_change回调处理
-                    # 从session_state获取最新值进行检查
-                    current_edited_data = st.session_state.get("edited_data_by_file", {})
-                    if filename not in current_edited_data:
-                        try:
-                            current_editor_value = st.session_state.get(editor_key)
-                            if isinstance(current_editor_value, pd.DataFrame):
-                                current_edited_data[filename] = current_editor_value.copy()
-                                st.session_state["edited_data_by_file"] = current_edited_data
-                        except Exception:
-                            # 如果同步失败，至少保存edited_df（这是编辑器返回的值）
-                            current_edited_data[filename] = edited_df.copy()
-                            st.session_state["edited_data_by_file"] = current_edited_data
+                    # 每次渲染后同步保存：确保数据一致性
+                    # 即使on_change没有触发（例如页面闲置后恢复），也能保存当前状态
+                    try:
+                        current_editor_value = st.session_state.get(editor_key)
+                        if isinstance(current_editor_value, pd.DataFrame):
+                            # 更新edited_data_by_file，确保数据同步
+                            edited_data_by_file = st.session_state.get("edited_data_by_file", {})
+                            edited_data_by_file[filename] = current_editor_value.copy()
+                            st.session_state["edited_data_by_file"] = edited_data_by_file
+                    except Exception:
+                        # 如果同步失败，至少保存edited_df（这是编辑器返回的值）
+                        if filename not in edited_data_by_file:
+                            edited_data_by_file[filename] = edited_df.copy()
+                            st.session_state["edited_data_by_file"] = edited_data_by_file
         
         st.divider()
         
@@ -1161,7 +886,7 @@ def main() -> None:
             data=edited_csv_bytes,
             file_name="attendance.csv",
             mime="text/csv",
-            width='content'
+            use_container_width=False
         )
 
 

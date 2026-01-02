@@ -1,7 +1,6 @@
 # python
 from typing import Optional, Any
 import threading
-import time
 
 try:
     import google.generativeai as genai
@@ -56,9 +55,7 @@ def build_instructions() -> str:
         "【出勤列】\n"
         "- 記錄類型=出勤。\n"
         "- 填入：派駐單位、姓名、日期、上班時間、下班時間。\n"
-        "- 總時數欄位由系統自動計算，不需填寫。\n"
-        "- 所有請假相關欄位（假別、請假起日/迄日、時間、時數、天數）都留空。\n"
-        "- 所有加班相關欄位（加班起日/迄日、時間、時數）都留空。\n\n"
+        "- 所有請假相關欄位（假別、請假起日/迄日、時間、時數、天數）都留空。\n\n"
         # 請假列
         "【請假列】\n"
         "- 記錄類型=請假。\n"
@@ -66,17 +63,7 @@ def build_instructions() -> str:
         "- 假別 正規化為以下其中一種：事假, 病假, 特休, 公假, 喪假, 婚假, 產假, 陪產假, 育嬰假, 家庭照顧假, 補休, 半薪病假, 其他。\n"
         "- 若有請假時間區間，填入『請假時間(起)』與『請假時間(迄)』。\n"
         "- 若原文給了請假時數，填入『請假時數(小時)』；若給了天數，填入『請假天數(天)』；若同時都有，兩欄皆可填。\n"
-        "- 跨午夜的區間（例如 22:00–02:00），日期區間使用起日與次日，但仍維持一列資料。\n"
-        "- 上班時間、下班時間、總時數欄位留空。\n"
-        "- 所有加班相關欄位（加班起日/迄日、時間、時數）都留空。\n\n"
-        # 加班列（新增）
-        "【加班列】\n"
-        "- 記錄類型=出勤（與出勤列相同）。\n"
-        "- 若文件中有明確的加班記錄，在出勤列的基礎上，額外填入加班相關欄位。\n"
-        "- 加班起日/迄日：依文件標示的加班起迄日期填寫（跨日仍是一列）。\n"
-        "- 加班時間(起)/加班時間(迄)：若有加班時間區間，填入對應時間（24小時制 HH:MM）。\n"
-        "- 加班時數(小時)：若原文給了加班時數，填入此欄位。\n"
-        "- 若同一筆記錄既有出勤又有加班，則在同一列中同時填入出勤和加班相關欄位。\n\n"
+        "- 跨午夜的區間（例如 22:00–02:00），日期區間使用起日與次日，但仍維持一列資料。\n\n"
         # 備註
         "【備註】\n"
         "備註欄只放原文中的補充說明：例如單據號、簽核意見、原始假別文字、特殊說明等。\n"
@@ -100,78 +87,34 @@ def _generate_image_csv_internal(image_bytes: bytes, model: str = "gemini-2.0-fl
     instructions = build_instructions()
     img_part = {"mime_type": "image/jpeg", "data": image_bytes}
     model_obj = genai.GenerativeModel(model)
-    
-    # 重试机制：最多重试3次，针对429错误
-    max_retries = 3
-    base_delay = 2  # 初始延迟2秒
-    
-    for attempt in range(max_retries):
-        try:
-            resp = model_obj.generate_content(
-                [instructions, img_part],
-                generation_config=genai.GenerationConfig(temperature=0),
-            )
-            text = _resp_text_safe(resp)
-            try:
-                usage = getattr(resp, "usage_metadata", None)
-                log_gemini_usage(model, usage, uploaded_filename=source or "", extra_info=instructions[:500])
-            except Exception:
-                pass
-            return text
-        except Exception as e:
-            error_str = str(e)
-            # 检查是否为429错误
-            if "429" in error_str or "Resource exhausted" in error_str or "quota" in error_str.lower():
-                if attempt < max_retries - 1:
-                    # 指数退避：2秒, 4秒, 8秒
-                    delay = base_delay * (2 ** attempt)
-                    time.sleep(delay)
-                    continue
-                else:
-                    # 最后一次重试失败，抛出带详细信息的异常
-                    raise RuntimeError(f"API資源耗盡（429錯誤）。請稍後再試或減少同時處理的檔案數量。詳細錯誤：{error_str}")
-            else:
-                # 非429错误，直接抛出
-                raise
+    resp = model_obj.generate_content(
+        [instructions, img_part],
+        generation_config=genai.GenerationConfig(temperature=0),
+    )
+    text = _resp_text_safe(resp)
+    try:
+        usage = getattr(resp, "usage_metadata", None)
+        log_gemini_usage(model, usage, uploaded_filename=source or "", extra_info=instructions[:500])
+    except Exception:
+        pass
+    return text
 
 
 def _generate_text_csv_internal(text: str, model: str = "gemini-pro", source: str = "") -> str:
     instructions = build_instructions()
     prompt = instructions + "以下為從 PDF 或 OCR 取得的純文字內容（可能包含表格展平）：\n\n" + text[:200000]
     model_obj = genai.GenerativeModel(model)
-    
-    # 重试机制：最多重试3次，针对429错误
-    max_retries = 3
-    base_delay = 2  # 初始延迟2秒
-    
-    for attempt in range(max_retries):
-        try:
-            resp = model_obj.generate_content(
-                prompt,
-                generation_config=genai.GenerationConfig(temperature=0),
-            )
-            out_text = _resp_text_safe(resp)
-            try:
-                usage = getattr(resp, "usage_metadata", None)
-                log_gemini_usage(model, usage, uploaded_filename=source or "", extra_info=prompt[:1000])
-            except Exception:
-                pass
-            return out_text
-        except Exception as e:
-            error_str = str(e)
-            # 检查是否为429错误
-            if "429" in error_str or "Resource exhausted" in error_str or "quota" in error_str.lower():
-                if attempt < max_retries - 1:
-                    # 指数退避：2秒, 4秒, 8秒
-                    delay = base_delay * (2 ** attempt)
-                    time.sleep(delay)
-                    continue
-                else:
-                    # 最后一次重试失败，抛出带详细信息的异常
-                    raise RuntimeError(f"API資源耗盡（429錯誤）。請稍後再試或減少同時處理的檔案數量。詳細錯誤：{error_str}")
-            else:
-                # 非429错误，直接抛出
-                raise
+    resp = model_obj.generate_content(
+        prompt,
+        generation_config=genai.GenerationConfig(temperature=0),
+    )
+    out_text = _resp_text_safe(resp)
+    try:
+        usage = getattr(resp, "usage_metadata", None)
+        log_gemini_usage(model, usage, uploaded_filename=source or "", extra_info=prompt[:1000])
+    except Exception:
+        pass
+    return out_text
 
 
 # Worker wrappers that use the global semaphores/lock. They won't block submission beyond the bounded queue.

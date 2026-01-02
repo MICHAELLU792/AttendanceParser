@@ -23,9 +23,9 @@ MODEL_PRICING = {
         "input_per_million": 0.15,
         "output_per_million": 0.60,
     },
-    "gemini-3-flash-preview": {
-        "input_per_million": 0.15,
-        "output_per_million": 0.60,
+    "gemini-2.0-flash-lite": {
+        "input_per_million": 0.075,
+        "output_per_million": 0.30,
     },
 }
 
