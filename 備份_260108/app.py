@@ -1205,64 +1205,14 @@ def main() -> None:
                 # 右侧：表格编辑器（支持Excel式大范围粘贴）
                 with right_col:
                     st.markdown("**表格資料（可編輯，支援Excel式大範圍貼上）**")
-                    
-                    # Replace功能：在表格上方添加查找替换功能
-                    with st.expander("🔍 查找與替換", expanded=False):
-                        replace_col1, replace_col2, replace_col3 = st.columns([2, 2, 1])
-                        with replace_col1:
-                            find_what = st.text_input("Find what:", key=f"find_what_{filename}", value="")
-                        with replace_col2:
-                            replace_with = st.text_input("Replace with:", key=f"replace_with_{filename}", value="")
-                        with replace_col3:
-                            st.write("")  # 占位
-                            st.write("")  # 占位
-                            replace_button = st.button("替換", key=f"replace_btn_{filename}", use_container_width=True)
-                    
                     # 获取该文件对应的DataFrame
                     df_for_file = data_by_file[filename]
                     
-                    # 检查是否有编辑过的版本（优先从edited_data_by_file读取，因为替换功能会更新它）
-                    # 注意：替换后不要从editor_key读取，因为st.data_editor可能还没有初始化
+                    # 检查是否有编辑过的版本
                     if filename in edited_data_by_file:
-                        # 如果有编辑过的版本（包括替换后的），使用它
                         base_df = edited_data_by_file[filename].copy()
                     else:
-                        # 如果没有编辑过的版本，使用原始数据
                         base_df = df_for_file.copy()
-                    
-                    # 处理替换功能
-                    if replace_button and find_what:
-                        # 执行替换操作
-                        base_df = base_df.copy()
-                        replace_count = 0
-                        # 在所有列中查找并替换
-                        for col in base_df.columns:
-                            # 转换为字符串类型，但先处理NaN值，避免变成"nan"字符串
-                            col_data = base_df[col].fillna("").astype(str)
-                            # 将"nan"字符串替换回空字符串
-                            col_data = col_data.replace("nan", "")
-                            # 计算替换前的匹配数量
-                            matches = col_data.str.contains(str(find_what), regex=False, na=False).sum()
-                            replace_count += matches
-                            # 执行替换
-                            col_data = col_data.str.replace(str(find_what), str(replace_with), regex=False)
-                            # 保存替换后的数据，确保空字符串保持为空字符串，而不是"nan"
-                            base_df[col] = col_data.replace("nan", "")
-                        
-                        # 保存替换后的数据
-                        edited_data_by_file = st.session_state.get("edited_data_by_file", {})
-                        if not isinstance(edited_data_by_file, dict):
-                            edited_data_by_file = {}
-                        edited_data_by_file[filename] = base_df.copy()
-                        st.session_state["edited_data_by_file"] = edited_data_by_file
-                        # 注意：不要在这里直接更新editor_key的session_state，因为st.data_editor还没有被调用
-                        # 让后续的代码自然加载替换后的数据
-                        
-                        if replace_count > 0:
-                            st.success(f"已將 \"{find_what}\" 替換為 \"{replace_with}\"（共 {replace_count} 處）")
-                        else:
-                            st.info(f"未找到 \"{find_what}\"")
-                        st.rerun()
                     
                     # 准备编辑用的DataFrame：将所有列转换为字符串类型，以支持TextColumn和Excel式粘贴
                     df_for_editor = base_df.copy()
@@ -1305,7 +1255,6 @@ def main() -> None:
                                 if minutes:
                                     df_for_editor.at[idx, "加班時數(分鐘)"] = minutes
                     
-                    # 定义editor_key（用于st.data_editor）
                     editor_key = f"data_editor_{filename}"
                     
                     # 创建回调函数：确保每次编辑都保存，并自动计算总时数和加班時數(分鐘)

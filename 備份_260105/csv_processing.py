@@ -82,18 +82,7 @@ def normalize_csv_text(csv_text: str) -> str:
 
 
 def csv_to_dataframe(csv_text: str) -> pd.DataFrame:
-    """读取CSV并确保列顺序与CSV_HEADERS一致"""
-    df = pd.read_csv(io.StringIO(csv_text))
-    
-    # 确保所有必需的列都存在，如果不存在则添加空列
-    for col in CSV_HEADERS:
-        if col not in df.columns:
-            df[col] = ""
-    
-    # 按照CSV_HEADERS的顺序重新排列列，并只保留CSV_HEADERS中的列
-    df = df[CSV_HEADERS]
-    
-    return df
+    return pd.read_csv(io.StringIO(csv_text))
 
 
 DANGEROUS_PREFIXES = ("=", "+", "-", "@")

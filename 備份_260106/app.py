@@ -107,8 +107,7 @@ def clear_uploads():
     st.session_state["uploader_key"] += 1
 
 def calculate_hours(start_time: str, end_time: str) -> str:
-    """计算两个时间之间的总时数（小时），格式：HH:MM -> 小时数（浮点数）
-    如果时间格式不正确（比如字段错位导致的值），返回空字符串"""
+    """计算两个时间之间的总时数（小时），格式：HH:MM -> 小时数（浮点数）"""
     if not start_time or not end_time or pd.isna(start_time) or pd.isna(end_time):
         return ""
     
@@ -116,10 +115,6 @@ def calculate_hours(start_time: str, end_time: str) -> str:
         start_time = str(start_time).strip()
         end_time = str(end_time).strip()
         if not start_time or not end_time:
-            return ""
-        
-        # 验证时间格式，防止字段错位导致错误计算
-        if not is_valid_time_format(start_time) or not is_valid_time_format(end_time):
             return ""
         
         # 解析时间格式 HH:MM
@@ -150,29 +145,8 @@ def calculate_hours(start_time: str, end_time: str) -> str:
     except Exception:
         return ""
 
-def is_valid_time_format(time_str: str) -> bool:
-    """验证时间字符串是否符合HH:MM格式"""
-    if not time_str or pd.isna(time_str):
-        return False
-    try:
-        time_str = str(time_str).strip()
-        if not time_str:
-            return False
-        parts = time_str.split(":")
-        if len(parts) != 2:
-            return False
-        hours = int(parts[0])
-        minutes = int(parts[1])
-        # 验证小时和分钟的范围
-        if hours < 0 or hours >= 24 or minutes < 0 or minutes >= 60:
-            return False
-        return True
-    except (ValueError, AttributeError):
-        return False
-
 def calculate_minutes(start_time: str, end_time: str) -> str:
-    """计算两个时间之间的总分钟数，格式：HH:MM -> 分钟数（整数，纯数字字符串，如"56"，不是"00:56"这种时间格式）
-    如果时间格式不正确（比如字段错位导致的值），返回空字符串"""
+    """计算两个时间之间的总分钟数，格式：HH:MM -> 分钟数（整数，纯数字字符串，如"56"，不是"00:56"这种时间格式）"""
     if not start_time or not end_time or pd.isna(start_time) or pd.isna(end_time):
         return ""
     
@@ -180,10 +154,6 @@ def calculate_minutes(start_time: str, end_time: str) -> str:
         start_time = str(start_time).strip()
         end_time = str(end_time).strip()
         if not start_time or not end_time:
-            return ""
-        
-        # 验证时间格式，防止字段错位导致错误计算
-        if not is_valid_time_format(start_time) or not is_valid_time_format(end_time):
             return ""
         
         # 解析时间格式 HH:MM
@@ -399,23 +369,25 @@ def expand_dataframe_to_monthly(df: pd.DataFrame, filename: str) -> pd.DataFrame
                 leave_type_val = new_row.get("假別", "")
                 if pd.notna(leave_type_val) and str(leave_type_val).strip():
                     new_row["假別"] = normalize_leave_type(str(leave_type_val).strip())
-                # 计算总时数（只要有上班時間和下班時間就计算，不限于出勤记录）
-                start_time_val = new_row.get("上班時間", "")
-                end_time_val = new_row.get("下班時間", "")
-                start_time = str(start_time_val).strip() if pd.notna(start_time_val) and str(start_time_val).strip() else ""
-                end_time = str(end_time_val).strip() if pd.notna(end_time_val) and str(end_time_val).strip() else ""
-                if start_time and end_time:
-                    new_row["總時數"] = calculate_hours(start_time, end_time)
-                
-                # 计算加班時數(分鐘)（只要有加班時間(起)和加班時間(迄)就计算）
-                overtime_start_val = new_row.get("加班時間(起)", "")
-                overtime_end_val = new_row.get("加班時間(迄)", "")
-                overtime_start = str(overtime_start_val).strip() if pd.notna(overtime_start_val) and str(overtime_start_val).strip() else ""
-                overtime_end = str(overtime_end_val).strip() if pd.notna(overtime_end_val) and str(overtime_end_val).strip() else ""
-                if overtime_start and overtime_end:
-                    minutes = calculate_minutes(overtime_start, overtime_end)
-                    if minutes:
-                        new_row["加班時數(分鐘)"] = minutes
+                # 如果是出勤记录，计算总时数
+                record_type_val = new_row.get("記錄類型", "")
+                record_type = str(record_type_val).strip() if pd.notna(record_type_val) and record_type_val != "" else ""
+                if record_type == "出勤":
+                    start_time_val = new_row.get("上班時間", "")
+                    end_time_val = new_row.get("下班時間", "")
+                    start_time = str(start_time_val).strip() if pd.notna(start_time_val) and start_time_val != "" else ""
+                    end_time = str(end_time_val).strip() if pd.notna(end_time_val) and end_time_val != "" else ""
+                    if start_time and end_time:
+                        new_row["總時數"] = calculate_hours(start_time, end_time)
+                    # 自动计算加班時數(分鐘)（仅当加班時間(起)和加班時間(迄)都有值时）
+                    overtime_start_val = new_row.get("加班時間(起)", "")
+                    overtime_end_val = new_row.get("加班時間(迄)", "")
+                    overtime_start = str(overtime_start_val).strip() if pd.notna(overtime_start_val) and overtime_start_val != "" else ""
+                    overtime_end = str(overtime_end_val).strip() if pd.notna(overtime_end_val) and overtime_end_val != "" else ""
+                    if overtime_start and overtime_end:
+                        minutes = calculate_minutes(overtime_start, overtime_end)
+                        if minutes:
+                            new_row["加班時數(分鐘)"] = minutes
                 full_df = pd.concat([full_df, pd.DataFrame([new_row])], ignore_index=True)
         else:
             # 如果该日期没有数据，创建空行（只填日期）
@@ -439,23 +411,25 @@ def expand_dataframe_to_monthly(df: pd.DataFrame, filename: str) -> pd.DataFrame
         leave_type_val = new_row.get("假別", "")
         if pd.notna(leave_type_val) and str(leave_type_val).strip():
             new_row["假別"] = normalize_leave_type(str(leave_type_val).strip())
-        # 计算总时数（只要有上班時間和下班時間就计算，不限于出勤记录）
-        start_time_val = new_row.get("上班時間", "")
-        end_time_val = new_row.get("下班時間", "")
-        start_time = str(start_time_val).strip() if pd.notna(start_time_val) and str(start_time_val).strip() else ""
-        end_time = str(end_time_val).strip() if pd.notna(end_time_val) and str(end_time_val).strip() else ""
-        if start_time and end_time:
-            new_row["總時數"] = calculate_hours(start_time, end_time)
-        
-        # 计算加班時數(分鐘)（只要有加班時間(起)和加班時間(迄)就计算）
-        overtime_start_val = new_row.get("加班時間(起)", "")
-        overtime_end_val = new_row.get("加班時間(迄)", "")
-        overtime_start = str(overtime_start_val).strip() if pd.notna(overtime_start_val) and str(overtime_start_val).strip() else ""
-        overtime_end = str(overtime_end_val).strip() if pd.notna(overtime_end_val) and str(overtime_end_val).strip() else ""
-        if overtime_start and overtime_end:
-            minutes = calculate_minutes(overtime_start, overtime_end)
-            if minutes:
-                new_row["加班時數(分鐘)"] = minutes
+        # 如果是出勤记录，计算总时数
+        record_type_val = new_row.get("記錄類型", "")
+        record_type = str(record_type_val).strip() if pd.notna(record_type_val) and record_type_val != "" else ""
+        if record_type == "出勤":
+            start_time_val = new_row.get("上班時間", "")
+            end_time_val = new_row.get("下班時間", "")
+            start_time = str(start_time_val).strip() if pd.notna(start_time_val) and start_time_val != "" else ""
+            end_time = str(end_time_val).strip() if pd.notna(end_time_val) and end_time_val != "" else ""
+            if start_time and end_time:
+                new_row["總時數"] = calculate_hours(start_time, end_time)
+            # 自动计算加班時數(分鐘)（仅当加班時間(起)和加班時間(迄)都有值时）
+            overtime_start_val = new_row.get("加班時間(起)", "")
+            overtime_end_val = new_row.get("加班時間(迄)", "")
+            overtime_start = str(overtime_start_val).strip() if pd.notna(overtime_start_val) and overtime_start_val != "" else ""
+            overtime_end = str(overtime_end_val).strip() if pd.notna(overtime_end_val) and overtime_end_val != "" else ""
+            if overtime_start and overtime_end:
+                minutes = calculate_minutes(overtime_start, overtime_end)
+                if minutes:
+                    new_row["加班時數(分鐘)"] = minutes
         full_df = pd.concat([full_df, pd.DataFrame([new_row])], ignore_index=True)
     
     return full_df
@@ -1036,29 +1010,19 @@ def main() -> None:
                         file_df = df.iloc[row_indices].copy().reset_index(drop=True)
                         # 扩展为完整的月份日期列表
                         expanded_df = expand_dataframe_to_monthly(file_df, filename)
-                        # 计算总时数和加班時數(分鐘)（只要有对应时间字段就计算）
+                        # 计算总时数（对于出勤记录）
                         for idx, row in expanded_df.iterrows():
-                            # 计算总时数
-                            start_time_val = row.get("上班時間", "")
-                            end_time_val = row.get("下班時間", "")
-                            start_time = str(start_time_val).strip() if pd.notna(start_time_val) and str(start_time_val).strip() else ""
-                            end_time = str(end_time_val).strip() if pd.notna(end_time_val) and str(end_time_val).strip() else ""
-                            total_hours_val = row.get("總時數", "")
-                            total_hours = str(total_hours_val).strip() if pd.notna(total_hours_val) and str(total_hours_val).strip() else ""
-                            if start_time and end_time and not total_hours:
-                                expanded_df.at[idx, "總時數"] = calculate_hours(start_time, end_time)
-                            
-                            # 计算加班時數(分鐘)
-                            overtime_start_val = row.get("加班時間(起)", "")
-                            overtime_end_val = row.get("加班時間(迄)", "")
-                            overtime_start = str(overtime_start_val).strip() if pd.notna(overtime_start_val) and str(overtime_start_val).strip() else ""
-                            overtime_end = str(overtime_end_val).strip() if pd.notna(overtime_end_val) and str(overtime_end_val).strip() else ""
-                            overtime_minutes_val = row.get("加班時數(分鐘)", "")
-                            overtime_minutes = str(overtime_minutes_val).strip() if pd.notna(overtime_minutes_val) and str(overtime_minutes_val).strip() else ""
-                            if overtime_start and overtime_end and not overtime_minutes:
-                                minutes = calculate_minutes(overtime_start, overtime_end)
-                                if minutes:
-                                    expanded_df.at[idx, "加班時數(分鐘)"] = minutes
+                            record_type_val = row.get("記錄類型", "")
+                            record_type = str(record_type_val).strip() if pd.notna(record_type_val) and record_type_val != "" else ""
+                            if record_type == "出勤":
+                                start_time_val = row.get("上班時間", "")
+                                end_time_val = row.get("下班時間", "")
+                                start_time = str(start_time_val).strip() if pd.notna(start_time_val) and start_time_val != "" else ""
+                                end_time = str(end_time_val).strip() if pd.notna(end_time_val) and end_time_val != "" else ""
+                                total_hours_val = row.get("總時數", "")
+                                total_hours = str(total_hours_val).strip() if pd.notna(total_hours_val) and total_hours_val != "" else ""
+                                if start_time and end_time and not total_hours:
+                                    expanded_df.at[idx, "總時數"] = calculate_hours(start_time, end_time)
                         df_by_file[filename] = expanded_df
                     
                     st.session_state["data_by_file"] = df_by_file
@@ -1205,64 +1169,14 @@ def main() -> None:
                 # 右侧：表格编辑器（支持Excel式大范围粘贴）
                 with right_col:
                     st.markdown("**表格資料（可編輯，支援Excel式大範圍貼上）**")
-                    
-                    # Replace功能：在表格上方添加查找替换功能
-                    with st.expander("🔍 查找與替換", expanded=False):
-                        replace_col1, replace_col2, replace_col3 = st.columns([2, 2, 1])
-                        with replace_col1:
-                            find_what = st.text_input("Find what:", key=f"find_what_{filename}", value="")
-                        with replace_col2:
-                            replace_with = st.text_input("Replace with:", key=f"replace_with_{filename}", value="")
-                        with replace_col3:
-                            st.write("")  # 占位
-                            st.write("")  # 占位
-                            replace_button = st.button("替換", key=f"replace_btn_{filename}", use_container_width=True)
-                    
                     # 获取该文件对应的DataFrame
                     df_for_file = data_by_file[filename]
                     
-                    # 检查是否有编辑过的版本（优先从edited_data_by_file读取，因为替换功能会更新它）
-                    # 注意：替换后不要从editor_key读取，因为st.data_editor可能还没有初始化
+                    # 检查是否有编辑过的版本
                     if filename in edited_data_by_file:
-                        # 如果有编辑过的版本（包括替换后的），使用它
                         base_df = edited_data_by_file[filename].copy()
                     else:
-                        # 如果没有编辑过的版本，使用原始数据
                         base_df = df_for_file.copy()
-                    
-                    # 处理替换功能
-                    if replace_button and find_what:
-                        # 执行替换操作
-                        base_df = base_df.copy()
-                        replace_count = 0
-                        # 在所有列中查找并替换
-                        for col in base_df.columns:
-                            # 转换为字符串类型，但先处理NaN值，避免变成"nan"字符串
-                            col_data = base_df[col].fillna("").astype(str)
-                            # 将"nan"字符串替换回空字符串
-                            col_data = col_data.replace("nan", "")
-                            # 计算替换前的匹配数量
-                            matches = col_data.str.contains(str(find_what), regex=False, na=False).sum()
-                            replace_count += matches
-                            # 执行替换
-                            col_data = col_data.str.replace(str(find_what), str(replace_with), regex=False)
-                            # 保存替换后的数据，确保空字符串保持为空字符串，而不是"nan"
-                            base_df[col] = col_data.replace("nan", "")
-                        
-                        # 保存替换后的数据
-                        edited_data_by_file = st.session_state.get("edited_data_by_file", {})
-                        if not isinstance(edited_data_by_file, dict):
-                            edited_data_by_file = {}
-                        edited_data_by_file[filename] = base_df.copy()
-                        st.session_state["edited_data_by_file"] = edited_data_by_file
-                        # 注意：不要在这里直接更新editor_key的session_state，因为st.data_editor还没有被调用
-                        # 让后续的代码自然加载替换后的数据
-                        
-                        if replace_count > 0:
-                            st.success(f"已將 \"{find_what}\" 替換為 \"{replace_with}\"（共 {replace_count} 處）")
-                        else:
-                            st.info(f"未找到 \"{find_what}\"")
-                        st.rerun()
                     
                     # 准备编辑用的DataFrame：将所有列转换为字符串类型，以支持TextColumn和Excel式粘贴
                     df_for_editor = base_df.copy()
@@ -1283,58 +1197,37 @@ def main() -> None:
                     
                     col_cfg = column_config if column_config else None
                     
-                    # 在显示前，自动计算总时数和加班時數(分鐘)（只要有对应时间字段就计算）
-                    if "上班時間" in df_for_editor.columns and "下班時間" in df_for_editor.columns and "總時數" in df_for_editor.columns:
+                    # 在显示前，自动计算总时数（对于出勤记录）
+                    if "記錄類型" in df_for_editor.columns and "上班時間" in df_for_editor.columns and "下班時間" in df_for_editor.columns and "總時數" in df_for_editor.columns:
                         for idx in df_for_editor.index:
-                            # 计算总时数
-                            start_time = str(df_for_editor.at[idx, "上班時間"]).strip() if pd.notna(df_for_editor.at[idx, "上班時間"]) else ""
-                            end_time = str(df_for_editor.at[idx, "下班時間"]).strip() if pd.notna(df_for_editor.at[idx, "下班時間"]) else ""
-                            current_hours = str(df_for_editor.at[idx, "總時數"]).strip() if pd.notna(df_for_editor.at[idx, "總時數"]) else ""
-                            if start_time and end_time and (not current_hours or current_hours == "" or current_hours == "nan"):
-                                hours = calculate_hours(start_time, end_time)
-                                df_for_editor.at[idx, "總時數"] = hours
+                            record_type = str(df_for_editor.at[idx, "記錄類型"]).strip() if pd.notna(df_for_editor.at[idx, "記錄類型"]) else ""
+                            if record_type == "出勤":
+                                start_time = str(df_for_editor.at[idx, "上班時間"]).strip() if pd.notna(df_for_editor.at[idx, "上班時間"]) else ""
+                                end_time = str(df_for_editor.at[idx, "下班時間"]).strip() if pd.notna(df_for_editor.at[idx, "下班時間"]) else ""
+                                current_hours = str(df_for_editor.at[idx, "總時數"]).strip() if pd.notna(df_for_editor.at[idx, "總時數"]) else ""
+                                if start_time and end_time and (not current_hours or current_hours == "" or current_hours == "nan"):
+                                    hours = calculate_hours(start_time, end_time)
+                                    df_for_editor.at[idx, "總時數"] = hours
                     
-                    # 计算加班時數(分鐘)
-                    if "加班時間(起)" in df_for_editor.columns and "加班時間(迄)" in df_for_editor.columns and "加班時數(分鐘)" in df_for_editor.columns:
-                        for idx in df_for_editor.index:
-                            overtime_start = str(df_for_editor.at[idx, "加班時間(起)"]).strip() if pd.notna(df_for_editor.at[idx, "加班時間(起)"]) else ""
-                            overtime_end = str(df_for_editor.at[idx, "加班時間(迄)"]).strip() if pd.notna(df_for_editor.at[idx, "加班時間(迄)"]) else ""
-                            current_overtime_minutes = str(df_for_editor.at[idx, "加班時數(分鐘)"]).strip() if pd.notna(df_for_editor.at[idx, "加班時數(分鐘)"]) else ""
-                            if overtime_start and overtime_end and (not current_overtime_minutes or current_overtime_minutes == "" or current_overtime_minutes == "nan"):
-                                minutes = calculate_minutes(overtime_start, overtime_end)
-                                if minutes:
-                                    df_for_editor.at[idx, "加班時數(分鐘)"] = minutes
-                    
-                    # 定义editor_key（用于st.data_editor）
                     editor_key = f"data_editor_{filename}"
                     
-                    # 创建回调函数：确保每次编辑都保存，并自动计算总时数和加班時數(分鐘)
+                    # 创建回调函数：确保每次编辑都保存，并自动计算总时数
                     def make_on_change(fname):
                         def on_change():
                             try:
                                 val = st.session_state.get(f"data_editor_{fname}")
                                 if isinstance(val, pd.DataFrame):
-                                    # 自动计算总时数和加班時數(分鐘)（只要有对应时间字段就计算）
+                                    # 自动计算总时数（对于出勤记录）
                                     df_copy = val.copy()
-                                    
-                                    # 计算总时数
-                                    if "上班時間" in df_copy.columns and "下班時間" in df_copy.columns and "總時數" in df_copy.columns:
+                                    if "記錄類型" in df_copy.columns and "上班時間" in df_copy.columns and "下班時間" in df_copy.columns and "總時數" in df_copy.columns:
                                         for idx in df_copy.index:
-                                            start_time = str(df_copy.at[idx, "上班時間"]).strip() if pd.notna(df_copy.at[idx, "上班時間"]) else ""
-                                            end_time = str(df_copy.at[idx, "下班時間"]).strip() if pd.notna(df_copy.at[idx, "下班時間"]) else ""
-                                            if start_time and end_time:
-                                                hours = calculate_hours(start_time, end_time)
-                                                df_copy.at[idx, "總時數"] = hours
-                                    
-                                    # 计算加班時數(分鐘)
-                                    if "加班時間(起)" in df_copy.columns and "加班時間(迄)" in df_copy.columns and "加班時數(分鐘)" in df_copy.columns:
-                                        for idx in df_copy.index:
-                                            overtime_start = str(df_copy.at[idx, "加班時間(起)"]).strip() if pd.notna(df_copy.at[idx, "加班時間(起)"]) else ""
-                                            overtime_end = str(df_copy.at[idx, "加班時間(迄)"]).strip() if pd.notna(df_copy.at[idx, "加班時間(迄)"]) else ""
-                                            if overtime_start and overtime_end:
-                                                minutes = calculate_minutes(overtime_start, overtime_end)
-                                                if minutes:
-                                                    df_copy.at[idx, "加班時數(分鐘)"] = minutes
+                                            record_type = str(df_copy.at[idx, "記錄類型"]).strip() if pd.notna(df_copy.at[idx, "記錄類型"]) else ""
+                                            if record_type == "出勤":
+                                                start_time = str(df_copy.at[idx, "上班時間"]).strip() if pd.notna(df_copy.at[idx, "上班時間"]) else ""
+                                                end_time = str(df_copy.at[idx, "下班時間"]).strip() if pd.notna(df_copy.at[idx, "下班時間"]) else ""
+                                                if start_time and end_time:
+                                                    hours = calculate_hours(start_time, end_time)
+                                                    df_copy.at[idx, "總時數"] = hours
                                     
                                     # 立即保存到edited_data_by_file
                                     edited_data_by_file = st.session_state.get("edited_data_by_file", {})
